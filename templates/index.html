@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multi-Agent Chat</title>
+<style>
+  /* Color theme variables used across the page */
+  :root {
+    --bg: #0f1115;        /* page background */
+    --panel: #171a21;     /* drawer, inputs, badges */
+    --border: #2a2f3a;    /* borders and dividers */
+    --text: #e6e8ee;      /* main text color */
+    --muted: #8b93a7;     /* secondary text color */
+    --accent: #5b8cff;    /* buttons, focus, active elements */
+    --user: #1f2a44;      /* background of user messages */
+    --agent: #1d2230;     /* background of agent messages */
+    --danger: #ff6b6b;    /* delete buttons */
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  button, input, textarea, select { font: inherit; color: var(--text); }
+  input, textarea, select { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; outline: none; width: 100%; }
+  input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+
+  /* Button styles: default (.btn), outline (.ghost), destructive (.danger) */
+  .btn { padding: 8px 14px; border: none; border-radius: 8px; background: var(--accent);
+    color: #fff; font-weight: 600; cursor: pointer; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn.danger { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
+
+  /* ---------- Main screen ---------- */
+  .app { display: flex; flex-direction: column; height: 100%; max-width: 900px; margin: 0 auto; padding: 12px 16px; }
+  header { display: flex; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .menu-btn { width: 40px; height: 40px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--panel); cursor: pointer; font-size: 20px; flex-shrink: 0; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  .chat { flex: 1; overflow-y: auto; padding: 16px 4px; display: flex; flex-direction: column; gap: 12px; }
+  .empty { margin: auto; color: var(--muted); text-align: center; }
+  .msg { max-width: 80%; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--border);
+    line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.user { align-self: flex-end; background: var(--user); }
+  .msg.agent { align-self: flex-start; background: var(--agent); }
+  .msg.pending { color: var(--muted); font-style: italic; }
+  .badge { display: inline-block; margin-bottom: 6px; padding: 2px 8px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--border); color: var(--accent);
+    font-size: 12px; font-family: ui-monospace, monospace; }
+  form.composer { display: flex; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+  form.composer textarea { flex: 1; resize: none; height: 56px; }
+  form.composer .btn { padding: 0 20px; }
+
+  /* ---------- Slide-out drawer ---------- */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); opacity: 0; pointer-events: none;
+    transition: opacity .25s; z-index: 10; }
+  .overlay.open { opacity: 1; pointer-events: auto; }
+  .drawer { position: fixed; top: 0; left: 0; bottom: 0; width: min(320px, 85vw);
+    background: var(--panel); border-right: 1px solid var(--border);
+    transform: translateX(-100%); transition: transform .25s ease; z-index: 11;
+    display: flex; flex-direction: column; }
+  .drawer.open { transform: translateX(0); }
+  .tabs { display: flex; border-bottom: 1px solid var(--border); }
+  .tab { flex: 1; padding: 14px; background: none; border: none; color: var(--muted);
+    cursor: pointer; border-bottom: 2px solid transparent; }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab-body { flex: 1; overflow-y: auto; padding: 14px; }
+  .hidden { display: none !important; }
+
+  /* Chats list */
+  .chat-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 6px;
+    border: 1px solid transparent; display: flex; justify-content: space-between; gap: 8px; }
+  .chat-item:hover { background: var(--bg); }
+  .chat-item.active { border-color: var(--accent); }
+  .chat-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-item button { background: none; border: none; color: var(--muted); cursor: pointer; }
+
+  /* Settings */
+  .section-title { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 4px 0 10px; }
+  .card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 12px; background: var(--bg); }
+  .card .row { margin-bottom: 8px; }
+  .card label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .card .actions { display: flex; justify-content: flex-end; }
+  .limit-note { font-size: 12px; color: var(--muted); margin-top: -4px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+
+<!-- Dark overlay behind the drawer; clicking it closes the drawer -->
+<div class="overlay" id="overlay"></div>
+
+<!-- Slide-out side panel with the "Chats" and "Settings" tabs -->
+<aside class="drawer" id="drawer">
+  <div class="tabs">
+    <button class="tab active" data-tab="chats">Chats</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </div>
+
+  <!-- Tab: chats -->
+  <div class="tab-body" id="tab-chats">
+    <button class="btn" id="newChatBtn" style="width:100%; margin-bottom:12px;">+ New chat</button>
+    <div id="chatList"></div>
+  </div>
+
+  <!-- Tab: settings (API connections and models) -->
+  <div class="tab-body hidden" id="tab-settings">
+    <div class="section-title">API connections</div>
+    <div id="apiList"></div>
+    <button class="btn ghost" id="addApiBtn" style="width:100%; margin-bottom:20px;">+ Add API</button>
+
+    <div class="section-title">Models</div>
+    <div class="limit-note" id="modelLimitNote"></div>
+    <div id="modelList"></div>
+    <button class="btn ghost" id="addModelBtn" style="width:100%;">+ Add model</button>
+  </div>
+</aside>
+
+<!-- Main chat screen -->
+<div class="app">
+  <header>
+    <button class="menu-btn" id="menuBtn" aria-label="Menu">☰</button>
+    <h1 id="chatTitle">New chat</h1>
+  </header>
+
+  <div class="chat" id="chat">
+    <div class="empty" id="empty">Ask a question: a math problem or a request about a PDF.</div>
+  </div>
+
+  <form class="composer" id="form">
+    <textarea id="input" placeholder="Type your request... (Enter to send, Shift+Enter for a new line)"></textarea>
+    <button class="btn" type="submit" id="send">Send</button>
+  </form>
+</div>
+
+<script>
+// ===================== Constants and state =====================
+
+// Maximum number of models the user can configure
+const MAX_MODELS = 5;
+
+// When true, responses come from the local mock dispatcher instead of the server
+const USE_MOCK = true;
+
+// Key under which all settings and chats are stored in localStorage
+const STORAGE_KEY = "multiagent_state_v1";
+
+// Default title for a chat before the first message is sent
+const DEFAULT_CHAT_TITLE = "New chat";
+
+// In-memory application state: { apis: [], models: [], chats: [] }
+let state = loadState();
+
+// ID of the currently open chat, or null if none is selected
+let currentChatId = null;
+
+/**
+ * Returns an empty state object used when nothing is saved yet.
+ */
+function defaultState() {
+  return { apis: [], models: [], chats: [] };
+}
+
+/**
+ * Loads the saved state from localStorage.
+ * Falls back to the default state if nothing is saved or the data is corrupted.
+ */
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? { ...defaultState(), ...JSON.parse(raw) } : defaultState();
+  } catch { return defaultState(); }
+}
+
+/**
+ * Saves the current state to localStorage.
+ * Call this after every change to state.
+ */
+function saveState() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+/**
+ * Generates a short unique ID for chats, APIs and models.
+ * @returns {string}
+ */
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+/**
+ * Escapes HTML special characters so user text can be safely inserted into markup.
+ * @param {*} s - value to escape (converted to string)
+ * @returns {string}
+ */
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+// ===================== Drawer and swipe =====================
+
+// Side panel element
+const drawer = document.getElementById("drawer");
+
+// Dark overlay element behind the side panel
+const overlay = document.getElementById("overlay");
+
+/**
+ * Opens the side panel and shows the overlay.
+ */
+function openDrawer() { drawer.classList.add("open"); overlay.classList.add("open"); }
+
+/**
+ * Closes the side panel and hides the overlay.
+ */
+function closeDrawer() { drawer.classList.remove("open"); overlay.classList.remove("open"); }
+
+// Menu button opens the panel
+document.getElementById("menuBtn").addEventListener("click", openDrawer);
+
+// Clicking the overlay closes the panel
+overlay.addEventListener("click", closeDrawer);
+
+// Start X coordinate of the current touch gesture
+let touchStartX = 0;
+
+// Start Y coordinate of the current touch gesture
+let touchStartY = 0;
+
+// True if the gesture began in a position that can open or close the panel
+let touchTracking = false;
+
+// Width in px of the zone along the left edge where a swipe can start
+const EDGE_ZONE = 40;
+
+// Minimum horizontal swipe distance in px to trigger open or close
+const SWIPE_MIN = 60;
+
+// Records where the touch started and whether it can affect the panel
+document.addEventListener("touchstart", (e) => {
+  const t = e.touches[0];
+  touchStartX = t.clientX;
+  touchStartY = t.clientY;
+  touchTracking = drawer.classList.contains("open") || touchStartX <= EDGE_ZONE;
+}, { passive: true });
+
+// Decides whether the swipe opens or closes the panel
+document.addEventListener("touchend", (e) => {
+  if (!touchTracking) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - touchStartX;
+  const dy = t.clientY - touchStartY;
+  if (Math.abs(dy) > Math.abs(dx)) return; // mostly vertical gesture, ignore
+  if (!drawer.classList.contains("open") && dx > SWIPE_MIN) openDrawer();
+  if (drawer.classList.contains("open") && dx < -SWIPE_MIN) closeDrawer();
+}, { passive: true });
+
+// Switches between the "Chats" and "Settings" tabs when a tab button is clicked
+document.querySelectorAll(".tab").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    const name = btn.dataset.tab;
+    document.getElementById("tab-chats").classList.toggle("hidden", name !== "chats");
+    document.getElementById("tab-settings").classList.toggle("hidden", name !== "settings");
+  });
+});
+
+// ===================== Chats =====================
+
+// Container holding all chat messages
+const chat = document.getElementById("chat");
+
+// Placeholder text shown when the current chat has no messages
+const empty = document.getElementById("empty");
+
+// Container for the list of chats in the drawer
+const chatList = document.getElementById("chatList");
+
+// Header title showing the current chat name
+const chatTitle = document.getElementById("chatTitle");
+
+/**
+ * Finds the currently selected chat.
+ * @returns {object|null} the chat object, or null if none is selected
+ */
+function currentChat() {
+  return state.chats.find(c => c.id === currentChatId) || null;
+}
+
+/**
+ * Creates a new empty chat, makes it current, and closes the panel.
+ */
+function createChat() {
+  const c = { id: uid(), title: DEFAULT_CHAT_TITLE, messages: [] };
+  state.chats.unshift(c);
+  currentChatId = c.id;
+  saveState();
+  renderChats();
+  renderMessages();
+  closeDrawer();
+}
+
+/**
+ * Redraws the chat list in the drawer and updates the header title.
+ */
+function renderChats() {
+  chatList.innerHTML = "";
+  if (state.chats.length === 0) {
+    chatList.innerHTML = '<div style="color:var(--muted);font-size:14px;">No chats yet</div>';
+  }
+  state.chats.forEach(c => {
+    const item = document.createElement("div");
+    item.className = "chat-item" + (c.id === currentChatId ? " active" : "");
+    const title = document.createElement("span");
+    title.textContent = c.title;
+    const del = document.createElement("button");
+    del.textContent = "✕";
+    del.title = "Delete";
+    // Deletes the chat without also opening it
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.chats = state.chats.filter(x => x.id !== c.id);
+      if (currentChatId === c.id) currentChatId = null;
+      saveState(); renderChats(); renderMessages();
+    });
+    item.append(title, del);
+    // Opens the chat and closes the panel
+    item.addEventListener("click", () => {
+      currentChatId = c.id;
+      renderChats(); renderMessages(); closeDrawer();
+    });
+    chatList.appendChild(item);
+  });
+  chatTitle.textContent = currentChat() ? currentChat().title : DEFAULT_CHAT_TITLE;
+}
+
+/**
+ * Redraws the messages of the current chat in the main area.
+ */
+function renderMessages() {
+  chat.querySelectorAll(".msg").forEach(m => m.remove());
+  const c = currentChat();
+  empty.style.display = c && c.messages.length ? "none" : "";
+  if (c) c.messages.forEach(m => appendMessageEl(m.role, m.text, m.category));
+  chat.scrollTop = chat.scrollHeight;
+}
+
+/**
+ * Creates a message bubble in the DOM without saving it to state.
+ * @param {string} role - "user", "agent" or "agent pending"
+ * @param {string} text - message text
+ * @param {string|null} [category] - optional dispatcher category shown as a badge
+ * @returns {HTMLDivElement} the created element
+ */
+function appendMessageEl(role, text, category) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  if (category) {
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = "→ " + category;
+    div.append(badge, document.createElement("br"));
+  }
+  div.appendChild(document.createTextNode(text));
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+
+/**
+ * Saves a message to the current chat, renders it, and sets the chat title
+ * from the first user message.
+ * @param {string} role - "user" or "agent"
+ * @param {string} text - message text
+ * @param {string|null} [category] - optional dispatcher category
+ * @returns {HTMLDivElement} the created element
+ */
+function addMessage(role, text, category) {
+  if (!currentChat()) createChat();
+  const c = currentChat();
+  c.messages.push({ role, text, category });
+  if (c.title === DEFAULT_CHAT_TITLE && role === "user") {
+    c.title = text.slice(0, 30) || DEFAULT_CHAT_TITLE;
+  }
+  saveState();
+  renderChats();
+  empty.style.display = "none";
+  return appendMessageEl(role, text, category);
+}
+
+// Creates a new chat when the "+ New chat" button is clicked
+document.getElementById("newChatBtn").addEventListener("click", createChat);
+
+// ===================== Settings: API =====================
+
+// Container for the API connection cards
+const apiList = document.getElementById("apiList");
+
+/**
+ * Adds an empty API connection to state and redraws the lists.
+ */
+function addApi() {
+  state.apis.push({ id: uid(), name: "", url: "", key: "" });
+  saveState(); renderApis(); renderModels();
+}
+
+/**
+ * Redraws all API connection cards. Each input updates state on every change.
+ */
+function renderApis() {
+  apiList.innerHTML = "";
+  if (state.apis.length === 0) {
+    apiList.innerHTML = '<div class="limit-note">No connections yet</div>';
+  }
+  state.apis.forEach(api => {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      <div class="row"><label>Name</label><input data-f="name" placeholder="e.g. Laptop (Ollama)"></div>
+      <div class="row"><label>URL</label><input data-f="url" placeholder="http://192.168.1.20:11434"></div>
+      <div class="row"><label>Key (optional)</label><input data-f="key" type="password" placeholder="Auth token"></div>
+      <div class="actions"><button class="btn danger" data-del>Delete</button></div>`;
+    // Sync each input with its field in the API object
+    card.querySelectorAll("input").forEach(inp => {
+      inp.value = api[inp.dataset.f] || "";
+      inp.addEventListener("input", () => {
+        api[inp.dataset.f] = inp.value;
+        saveState();
+        renderModels(); // model dropdowns show API names, so refresh them
+      });
+    });
+    // Removes the API and unlinks any models that used it
+    card.querySelector("[data-del]").addEventListener("click", () => {
+      state.apis = state.apis.filter(a => a.id !== api.id);
+      state.models.forEach(m => { if (m.apiId === api.id) m.apiId = ""; });
+      saveState(); renderApis(); renderModels();
+    });
+    apiList.appendChild(card);
+  });
+}
+
+// Adds a new API connection when "+ Add API" is clicked
+document.getElementById("addApiBtn").addEventListener("click", addApi);
+
+// ===================== Settings: models =====================
+
+// Container for the model cards
+const modelList = document.getElementById("modelList");
+
+// "+ Add model" button, disabled when the limit is reached
+const addModelBtn = document.getElementById("addModelBtn");
+
+// Label showing how many models are configured, for example "Models: 2 of 5"
+const modelLimitNote = document.getElementById("modelLimitNote");
+
+/**
+ * Adds an empty model to state, unless the MAX_MODELS limit is reached.
+ */
+function addModel() {
+  if (state.models.length >= MAX_MODELS) return;
+  state.models.push({ id: uid(), name: "", apiId: "", modelName: "" });
+  saveState(); renderModels();
+}
+
+/**
+ * Redraws all model cards, the API dropdowns, and the limit counter.
+ */
+function renderModels() {
+  modelList.innerHTML = "";
+  state.models.forEach(m => {
+    const card = document.createElement("div");
+    card.className = "card";
+    // Builds the API dropdown from the saved connections
+    const apiOptions = state.apis.map(a =>
+      `<option value="${a.id}" ${a.id === m.apiId ? "selected" : ""}>${escapeHtml(a.name || "Unnamed")}</option>`
+    ).join("");
+    card.innerHTML = `
+      <div class="row"><label>Model name</label><input data-f="name" placeholder="e.g. Mathematician"></div>
+      <div class="row"><label>API</label>
+        <select data-f="apiId"><option value="">— not selected —</option>${apiOptions}</select></div>
+      <div class="row"><label>Model identifier on the server</label><input data-f="modelName" placeholder="e.g. qwen2.5-math:7b"></div>
+      <div class="actions"><button class="btn danger" data-del>Delete</button></div>`;
+    // Sync each field with the model object
+    card.querySelectorAll("input, select").forEach(el => {
+      el.value = m[el.dataset.f] || "";
+      el.addEventListener("input", () => { m[el.dataset.f] = el.value; saveState(); });
+      el.addEventListener("change", () => { m[el.dataset.f] = el.value; saveState(); });
+    });
+    // Removes this model from state
+    card.querySelector("[data-del]").addEventListener("click", () => {
+      state.models = state.models.filter(x => x.id !== m.id);
+      saveState(); renderModels();
+    });
+    modelList.appendChild(card);
+  });
+  addModelBtn.disabled = state.models.length >= MAX_MODELS;
+  modelLimitNote.textContent = `Models: ${state.models.length} of ${MAX_MODELS}`;
+}
+
+// Adds a new model when "+ Add model" is clicked
+addModelBtn.addEventListener("click", addModel);
+
+// ===================== Sending requests =====================
+
+// Chat input form
+const form = document.getElementById("form");
+
+// Text area where the user types the request
+const input = document.getElementById("input");
+
+// Send button
+const sendBtn = document.getElementById("send");
+
+/**
+ * Local stub that imitates the dispatcher: picks a category by keywords.
+ * Replace with realRequest() once the Flask backend is ready.
+ * @param {string} prompt - user request
+ * @returns {Promise<{category: string, answer: string}>}
+ */
+async function mockRequest(prompt) {
+  await new Promise(r => setTimeout(r, 600)); // simulate network delay
+  const lower = prompt.toLowerCase();
+  let category = "general";
+  if (/\d|[+\-*/=^]|integral|equation|solve|интеграл|уравнен|реши/.test(lower)) category = "math";
+  else if (/pdf|document|file|page|документ|файл|страниц/.test(lower)) category = "pdf";
+  return { category, answer: `[stub] Request classified as "${category}". The specialist's answer will appear here.` };
+}
+
+/**
+ * Sends the prompt to the backend at /api/chat.
+ * @param {string} prompt - user request
+ * @returns {Promise<{category: string, answer: string}>}
+ * @throws {Error} if the server responds with an error status
+ */
+async function realRequest(prompt) {
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt })
+  });
+  if (!res.ok) throw new Error(`Server returned ${res.status}`);
+  return res.json();
+}
+
+// Handles form submission: shows the user message, requests an answer, and shows the result
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const prompt = input.value.trim();
+  if (!prompt) return;
+
+  addMessage("user", prompt);
+  input.value = "";
+  sendBtn.disabled = true;
+  // Temporary "Thinking..." bubble, removed when the answer arrives
+  const pending = appendMessageEl("agent pending", "Thinking...");
+
+  try {
+    const data = USE_MOCK ? await mockRequest(prompt) : await realRequest(prompt);
+    pending.remove();
+    addMessage("agent", data.answer, data.category);
+  } catch (err) {
+    pending.remove();
+    addMessage("agent", "Error: " + err.message);
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
+  }
+});
+
+// Enter sends the message, Shift+Enter inserts a new line
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    form.requestSubmit();
+  }
+});
+
+// ===================== Initialization =====================
+
+// Draw the initial state when the page loads
+renderChats();
+renderMessages();
+renderApis();
+renderModels();
+</script>
+</body>
+</html>

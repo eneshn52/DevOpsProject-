@@ -1,0 +1,25 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+.env
+
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# SQLite database
+*.sqlite3
+db.sqlite3
+
+# IDE / Editor folders
+.vscode/
+.idea/
+
+# Static and media uploads
+media/
+staticfiles/
+
+# Logs
+*.log
