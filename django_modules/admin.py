@@ -1,40 +1,25 @@
 from django.contrib import admin
 from .models import (
-    ApiProvider,
     AiModel,
-    AgentRole,
     Agent,
     CapabilityMetric,
     AgentCapabilityScore,
-    Project,
     Task,
     TaskDependency,
     ChatSession,
     ChatMessage,
-    InterAgentMessage,
     CodeArtifact,
     ArtifactReview,
 )
 
 
 # ==========================================
-# Inlines (edit related items on the same page)
+# Inlines
 # ==========================================
-
-class AiModelInline(admin.TabularInline):
-    model = AiModel
-    extra = 1
-
 
 class AgentCapabilityScoreInline(admin.TabularInline):
     model = AgentCapabilityScore
     extra = 1
-
-
-class TaskInline(admin.TabularInline):
-    model = Task
-    extra = 0
-    fields = ('title', 'required_role', 'assigned_agent', 'status', 'sequence_order')
 
 
 class ChatMessageInline(admin.TabularInline):
@@ -48,32 +33,17 @@ class ChatMessageInline(admin.TabularInline):
 # 1. AI Infrastructure & Agents
 # ==========================================
 
-@admin.register(ApiProvider)
-class ApiProviderAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'base_url', 'is_active', 'created_at')
-    list_filter = ('is_active', 'created_at')
-    search_fields = ('name', 'base_url')
-    inlines = [AiModelInline]
-
-
 @admin.register(AiModel)
 class AiModelAdmin(admin.ModelAdmin):
-    list_display = ('id', 'display_name', 'model_identifier', 'provider', 'context_window')
-    list_filter = ('provider',)
-    search_fields = ('display_name', 'model_identifier')
-
-
-@admin.register(AgentRole)
-class AgentRoleAdmin(admin.ModelAdmin):
-    list_display = ('id', 'code', 'name', 'description')
-    search_fields = ('code', 'name')
+    list_display = ('id', 'display_name', 'model_identifier', 'api_url', 'context_window')
+    search_fields = ('display_name', 'model_identifier', 'api_url')
 
 
 @admin.register(Agent)
 class AgentAdmin(admin.ModelAdmin):
     list_display = ('id', 'name', 'role', 'model', 'is_active')
     list_filter = ('role', 'is_active')
-    search_fields = ('name',)
+    search_fields = ('name', 'role')
     inlines = [AgentCapabilityScoreInline]
 
 
@@ -90,38 +60,29 @@ class AgentCapabilityScoreAdmin(admin.ModelAdmin):
 
 
 # ==========================================
-# 2. Projects & Task Decomposition
+# 2. Task Management
 # ==========================================
-
-@admin.register(Project)
-class ProjectAdmin(admin.ModelAdmin):
-    list_display = ('id', 'title', 'status', 'created_at', 'updated_at')
-    list_filter = ('status', 'created_at')
-    search_fields = ('title', 'raw_requirements')
-    inlines = [TaskInline]
-
 
 @admin.register(Task)
 class TaskAdmin(admin.ModelAdmin):
-    list_display = ('id', 'title', 'project', 'required_role', 'assigned_agent', 'status', 'sequence_order', 'created_at')
-    list_filter = ('status', 'required_role', 'project')
+    list_display = ('id', 'title', 'required_role', 'assigned_agent', 'status', 'sequence_order', 'created_at')
+    list_filter = ('status', 'required_role')
     search_fields = ('title', 'description')
 
 
 @admin.register(TaskDependency)
 class TaskDependencyAdmin(admin.ModelAdmin):
     list_display = ('id', 'task', 'depends_on')
-    list_filter = ('task__project',)
 
 
 # ==========================================
-# 3. Chat & Inter-Agent Communication
+# 3. Chat System
 # ==========================================
 
 @admin.register(ChatSession)
 class ChatSessionAdmin(admin.ModelAdmin):
-    list_display = ('id', 'title', 'project', 'created_at', 'updated_at')
-    list_filter = ('project', 'created_at')
+    list_display = ('id', 'title', 'created_at', 'updated_at')
+    list_filter = ('created_at',)
     search_fields = ('title',)
     inlines = [ChatMessageInline]
 
@@ -133,13 +94,6 @@ class ChatMessageAdmin(admin.ModelAdmin):
     search_fields = ('content',)
 
 
-@admin.register(InterAgentMessage)
-class InterAgentMessageAdmin(admin.ModelAdmin):
-    list_display = ('id', 'task', 'sender_agent', 'receiver_agent', 'message_type', 'created_at')
-    list_filter = ('message_type', 'task')
-    search_fields = ('content',)
-
-
 # ==========================================
 # 4. Artifacts & Code Reviews
 # ==========================================
@@ -147,7 +101,7 @@ class InterAgentMessageAdmin(admin.ModelAdmin):
 @admin.register(CodeArtifact)
 class CodeArtifactAdmin(admin.ModelAdmin):
     list_display = ('id', 'task', 'file_path', 'version', 'created_at')
-    list_filter = ('version', 'task__project')
+    list_filter = ('version',)
     search_fields = ('file_path',)
 
 

@@ -5,45 +5,26 @@ from django.db import models
 # 1. AI Infrastructure & Agents
 # ==========================================
 
-class ApiProvider(models.Model):
-    name = models.CharField(max_length=100)
-    base_url = models.URLField(max_length=255)
-    api_key = models.CharField(max_length=255, blank=True, null=True)
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return self.name
-
-
 class AiModel(models.Model):
-    provider = models.ForeignKey(ApiProvider, on_delete=models.CASCADE, related_name='models')
     display_name = models.CharField(max_length=100)
-    model_identifier = models.CharField(max_length=100)  # e.g., 'qwen2.5-coder:7b'
+    model_identifier = models.CharField(max_length=100)  # e.g., 'qwen2.5:3b'
+    api_url = models.URLField(max_length=255, default='http://localhost:11434')
+    api_key = models.CharField(max_length=255, blank=True, null=True)
     context_window = models.PositiveIntegerField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.display_name} ({self.model_identifier})"
 
 
-class AgentRole(models.Model):
-    code = models.CharField(max_length=50, unique=True)  # 'MASTER', 'FRONTEND', etc.
-    name = models.CharField(max_length=100)
-    description = models.TextField(blank=True)
-
-    def __str__(self):
-        return self.name
-
-
 class Agent(models.Model):
     name = models.CharField(max_length=100)
-    role = models.ForeignKey(AgentRole, on_delete=models.PROTECT, related_name='agents')
+    role = models.CharField(max_length=100, default='General Agent')  # e.g., 'FRONTEND', 'BACKEND', 'DATABASE'
     model = models.ForeignKey(AiModel, on_delete=models.PROTECT, related_name='agents')
-    system_prompt = models.TextField()
+    system_prompt = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
 
     def __str__(self):
-        return f"{self.name} [{self.role.code}]"
+        return f"{self.name} [{self.role}]"
 
 
 class CapabilityMetric(models.Model):
@@ -66,26 +47,8 @@ class AgentCapabilityScore(models.Model):
 
 
 # ==========================================
-# 2. Projects & Task Decomposition
+# 2. Task Management
 # ==========================================
-
-class Project(models.Model):
-    STATUS_CHOICES = [
-        ('PLANNING', 'Planning'),
-        ('IN_PROGRESS', 'In Progress'),
-        ('COMPLETED', 'Completed'),
-        ('FAILED', 'Failed'),
-    ]
-
-    title = models.CharField(max_length=200)
-    raw_requirements = models.TextField()
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PLANNING')
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self):
-        return self.title
-
 
 class Task(models.Model):
     STATUS_CHOICES = [
@@ -96,11 +59,10 @@ class Task(models.Model):
         ('FAILED', 'Failed'),
     ]
 
-    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='tasks')
-    required_role = models.ForeignKey(AgentRole, on_delete=models.PROTECT)
-    assigned_agent = models.ForeignKey(Agent, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_tasks')
     title = models.CharField(max_length=200)
-    description = models.TextField()
+    description = models.TextField(blank=True)
+    required_role = models.CharField(max_length=100, default='General')
+    assigned_agent = models.ForeignKey(Agent, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_tasks')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
     sequence_order = models.PositiveIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -109,7 +71,7 @@ class Task(models.Model):
         ordering = ['sequence_order']
 
     def __str__(self):
-        return f"[{self.project.title}] {self.title}"
+        return self.title
 
 
 class TaskDependency(models.Model):
@@ -124,11 +86,10 @@ class TaskDependency(models.Model):
 
 
 # ==========================================
-# 3. Chat & Inter-Agent Communication
+# 3. Chat System
 # ==========================================
 
 class ChatSession(models.Model):
-    project = models.ForeignKey(Project, on_delete=models.SET_NULL, null=True, blank=True, related_name='chats')
     title = models.CharField(max_length=200, default='New chat')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -153,18 +114,6 @@ class ChatMessage(models.Model):
 
     def __str__(self):
         return f"{self.sender_type}: {self.content[:30]}"
-
-
-class InterAgentMessage(models.Model):
-    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='agent_logs')
-    sender_agent = models.ForeignKey(Agent, on_delete=models.CASCADE, related_name='sent_messages')
-    receiver_agent = models.ForeignKey(Agent, on_delete=models.CASCADE, related_name='received_messages')
-    message_type = models.CharField(max_length=50)
-    content = models.TextField()
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return f"{self.sender_agent.name} -> {self.receiver_agent.name}: {self.message_type}"
 
 
 # ==========================================

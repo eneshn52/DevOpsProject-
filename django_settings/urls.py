@@ -21,4 +21,6 @@ from django_modules import views
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('', views.index, name='index'),
+    path('api/chat/', views.chat_api, name='chat_api'),
+    path('api/chat', views.chat_api, name='chat_api_no_slash'),
 ]

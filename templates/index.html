@@ -33,14 +33,14 @@
   .btn.danger { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
 
   /* ---------- Main screen ---------- */
-  .app { display: flex; flex-direction: column; height: 100%; max-width: 900px; margin: 0 auto; padding: 12px 16px; }
+  .app { display: flex; flex-direction: column; height: 100%; width: 100%; max-width: 100%; margin: 0; padding: 12px 28px; }
   header { display: flex; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
   .menu-btn { width: 40px; height: 40px; border-radius: 10px; border: 1px solid var(--border);
     background: var(--panel); cursor: pointer; font-size: 20px; flex-shrink: 0; }
   header h1 { margin: 0; font-size: 18px; font-weight: 600; }
   .chat { flex: 1; overflow-y: auto; padding: 16px 4px; display: flex; flex-direction: column; gap: 12px; }
   .empty { margin: auto; color: var(--muted); text-align: center; }
-  .msg { max-width: 80%; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--border);
+  .msg { max-width: 85%; padding: 12px 16px; border-radius: 12px; border: 1px solid var(--border);
     line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; }
   .msg.user { align-self: flex-end; background: var(--user); }
   .msg.agent { align-self: flex-start; background: var(--agent); }
@@ -50,7 +50,7 @@
     font-size: 12px; font-family: ui-monospace, monospace; }
   form.composer { display: flex; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
   form.composer textarea { flex: 1; resize: none; height: 56px; }
-  form.composer .btn { padding: 0 20px; }
+  form.composer .btn { padding: 0 24px; }
 
   /* ---------- Slide-out drawer ---------- */
   .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); opacity: 0; pointer-events: none;
@@ -78,10 +78,42 @@
 
   /* Settings */
   .section-title { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 4px 0 10px; }
-  .card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 12px; background: var(--bg); }
+  .card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 10px; background: var(--bg); transition: border-color .15s; }
   .card .row { margin-bottom: 8px; }
   .card label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-  .card .actions { display: flex; justify-content: flex-end; }
+  .card .actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 10px; }
+  .card.collapsed {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 12px;
+    cursor: pointer;
+    margin-bottom: 8px;
+  }
+  .card.collapsed:hover {
+    background: #181b22;
+    border-color: var(--accent);
+  }
+  .card-summary {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+  }
+  .card-summary .title { font-weight: 600; color: var(--text); }
+  .card-summary .subtitle { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-actions-compact {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .btn.sm { padding: 4px 10px; font-size: 12px; border-radius: 6px; font-weight: 500; }
   .limit-note { font-size: 12px; color: var(--muted); margin-top: -4px; margin-bottom: 10px; }
 </style>
 </head>
@@ -140,7 +172,7 @@
 const MAX_MODELS = 5;
 
 // When true, responses come from the local mock dispatcher instead of the server
-const USE_MOCK = true;
+const USE_MOCK = false;
 
 // Key under which all settings and chats are stored in localStorage
 const STORAGE_KEY = "multiagent_state_v1";
@@ -401,12 +433,12 @@ const apiList = document.getElementById("apiList");
  * Adds an empty API connection to state and redraws the lists.
  */
 function addApi() {
-  state.apis.push({ id: uid(), name: "", url: "", key: "" });
+  state.apis.push({ id: uid(), name: "", url: "", key: "", collapsed: false });
   saveState(); renderApis(); renderModels();
 }
 
 /**
- * Redraws all API connection cards. Each input updates state on every change.
+ * Redraws all API connection cards. Supports compact collapsed view and expanded edit view.
  */
 function renderApis() {
   apiList.innerHTML = "";
@@ -415,27 +447,70 @@ function renderApis() {
   }
   state.apis.forEach(api => {
     const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML = `
-      <div class="row"><label>Name</label><input data-f="name" placeholder="e.g. Laptop (Ollama)"></div>
-      <div class="row"><label>URL</label><input data-f="url" placeholder="http://192.168.1.20:11434"></div>
-      <div class="row"><label>Key (optional)</label><input data-f="key" type="password" placeholder="Auth token"></div>
-      <div class="actions"><button class="btn danger" data-del>Delete</button></div>`;
-    // Sync each input with its field in the API object
-    card.querySelectorAll("input").forEach(inp => {
-      inp.value = api[inp.dataset.f] || "";
-      inp.addEventListener("input", () => {
-        api[inp.dataset.f] = inp.value;
-        saveState();
-        renderModels(); // model dropdowns show API names, so refresh them
+    const isCollapsed = api.collapsed ?? Boolean(api.name || api.url);
+
+    if (isCollapsed) {
+      card.className = "card collapsed";
+      const displayName = escapeHtml(api.name || "Unnamed connection");
+      const displayUrl = escapeHtml(api.url || "no URL");
+      card.innerHTML = `
+        <div class="card-summary" title="${displayName} (${displayUrl})">
+          <span class="title">🔌 ${displayName}</span>
+          <span class="subtitle">${displayUrl}</span>
+        </div>
+        <div class="card-actions-compact">
+          <button class="btn ghost sm" data-edit title="Edit">Edit</button>
+          <button class="btn danger sm" data-del title="Delete">✕</button>
+        </div>
+      `;
+      // Clicking Edit or the card expands it
+      card.addEventListener("click", (e) => {
+        if (e.target.closest("[data-del]")) return;
+        api.collapsed = false;
+        saveState(); renderApis();
       });
-    });
-    // Removes the API and unlinks any models that used it
-    card.querySelector("[data-del]").addEventListener("click", () => {
-      state.apis = state.apis.filter(a => a.id !== api.id);
-      state.models.forEach(m => { if (m.apiId === api.id) m.apiId = ""; });
-      saveState(); renderApis(); renderModels();
-    });
+      // Delete button
+      card.querySelector("[data-del]").addEventListener("click", (e) => {
+        e.stopPropagation();
+        state.apis = state.apis.filter(a => a.id !== api.id);
+        state.models.forEach(m => { if (m.apiId === api.id) m.apiId = ""; });
+        saveState(); renderApis(); renderModels();
+      });
+    } else {
+      card.className = "card";
+      card.innerHTML = `
+        <div class="row"><label>Name</label><input data-f="name" placeholder="e.g. Laptop (Ollama)"></div>
+        <div class="row"><label>URL</label><input data-f="url" placeholder="http://192.168.1.20:11434"></div>
+        <div class="row"><label>Key (optional)</label><input data-f="key" type="password" placeholder="Auth token"></div>
+        <div class="actions">
+          <button class="btn danger sm" data-del>Delete</button>
+          <button class="btn sm" data-save>Add</button>
+        </div>`;
+
+      // Sync each input with its field in the API object
+      card.querySelectorAll("input").forEach(inp => {
+        inp.value = api[inp.dataset.f] || "";
+        inp.addEventListener("input", () => {
+          api[inp.dataset.f] = inp.value;
+          saveState();
+          renderModels();
+        });
+      });
+
+      // Clicking "Add" shrinks it into one string
+      card.querySelector("[data-save]").addEventListener("click", () => {
+        api.collapsed = true;
+        saveState(); renderApis(); renderModels();
+      });
+
+      // Removes the API and unlinks any models that used it
+      card.querySelector("[data-del]").addEventListener("click", () => {
+        state.apis = state.apis.filter(a => a.id !== api.id);
+        state.models.forEach(m => { if (m.apiId === api.id) m.apiId = ""; });
+        saveState(); renderApis(); renderModels();
+      });
+    }
+
     apiList.appendChild(card);
   });
 }
@@ -459,39 +534,80 @@ const modelLimitNote = document.getElementById("modelLimitNote");
  */
 function addModel() {
   if (state.models.length >= MAX_MODELS) return;
-  state.models.push({ id: uid(), name: "", apiId: "", modelName: "" });
+  state.models.push({ id: uid(), name: "", apiId: "", modelName: "", collapsed: false });
   saveState(); renderModels();
 }
 
 /**
- * Redraws all model cards, the API dropdowns, and the limit counter.
+ * Redraws all model cards. Supports compact collapsed view and expanded edit view.
  */
 function renderModels() {
   modelList.innerHTML = "";
   state.models.forEach(m => {
     const card = document.createElement("div");
-    card.className = "card";
-    // Builds the API dropdown from the saved connections
-    const apiOptions = state.apis.map(a =>
-      `<option value="${a.id}" ${a.id === m.apiId ? "selected" : ""}>${escapeHtml(a.name || "Unnamed")}</option>`
-    ).join("");
-    card.innerHTML = `
-      <div class="row"><label>Model name</label><input data-f="name" placeholder="e.g. Mathematician"></div>
-      <div class="row"><label>API</label>
-        <select data-f="apiId"><option value="">— not selected —</option>${apiOptions}</select></div>
-      <div class="row"><label>Model identifier on the server</label><input data-f="modelName" placeholder="e.g. qwen2.5-math:7b"></div>
-      <div class="actions"><button class="btn danger" data-del>Delete</button></div>`;
-    // Sync each field with the model object
-    card.querySelectorAll("input, select").forEach(el => {
-      el.value = m[el.dataset.f] || "";
-      el.addEventListener("input", () => { m[el.dataset.f] = el.value; saveState(); });
-      el.addEventListener("change", () => { m[el.dataset.f] = el.value; saveState(); });
-    });
-    // Removes this model from state
-    card.querySelector("[data-del]").addEventListener("click", () => {
-      state.models = state.models.filter(x => x.id !== m.id);
-      saveState(); renderModels();
-    });
+    const isCollapsed = m.collapsed ?? Boolean(m.name || m.modelName);
+
+    if (isCollapsed) {
+      card.className = "card collapsed";
+      const displayName = escapeHtml(m.name || "Unnamed model");
+      const displayId = escapeHtml(m.modelName || "no identifier");
+      card.innerHTML = `
+        <div class="card-summary" title="${displayName} (${displayId})">
+          <span class="title">🤖 ${displayName}</span>
+          <span class="subtitle">(${displayId})</span>
+        </div>
+        <div class="card-actions-compact">
+          <button class="btn ghost sm" data-edit title="Edit">Edit</button>
+          <button class="btn danger sm" data-del title="Delete">✕</button>
+        </div>
+      `;
+      // Clicking Edit or the card expands it
+      card.addEventListener("click", (e) => {
+        if (e.target.closest("[data-del]")) return;
+        m.collapsed = false;
+        saveState(); renderModels();
+      });
+      // Delete button
+      card.querySelector("[data-del]").addEventListener("click", (e) => {
+        e.stopPropagation();
+        state.models = state.models.filter(x => x.id !== m.id);
+        saveState(); renderModels();
+      });
+    } else {
+      card.className = "card";
+      const apiOptions = state.apis.map(a =>
+        `<option value="${a.id}" ${a.id === m.apiId ? "selected" : ""}>${escapeHtml(a.name || "Unnamed")}</option>`
+      ).join("");
+      card.innerHTML = `
+        <div class="row"><label>Model name</label><input data-f="name" placeholder="e.g. Mathematician"></div>
+        <div class="row"><label>API</label>
+          <select data-f="apiId"><option value="">— not selected —</option>${apiOptions}</select></div>
+        <div class="row"><label>Model identifier on the server</label><input data-f="modelName" placeholder="e.g. qwen2.5-math:7b"></div>
+        <div class="actions">
+          <button class="btn danger sm" data-del>Delete</button>
+          <button class="btn sm" data-save>Add</button>
+        </div>`;
+
+      // Sync each field with the model object
+      card.querySelectorAll("input, select").forEach(el => {
+        el.value = m[el.dataset.f] || "";
+        el.addEventListener("input", () => { m[el.dataset.f] = el.value; saveState(); });
+        el.addEventListener("change", () => { m[el.dataset.f] = el.value; saveState(); });
+      });
+
+      // Clicking "Add" shrinks it into one string
+      card.querySelector("[data-save]").addEventListener("click", () => {
+        m.collapsed = true;
+        saveState(); renderModels();
+      });
+
+      // Removes this model from state
+      card.querySelector("[data-del]").addEventListener("click", () => {
+        state.models = state.models.filter(x => x.id !== m.id);
+        saveState(); renderModels();
+      });
+    }
+
     modelList.appendChild(card);
   });
   addModelBtn.disabled = state.models.length >= MAX_MODELS;
@@ -534,15 +650,34 @@ async function mockRequest(prompt) {
  * @throws {Error} if the server responds with an error status
  */
 async function realRequest(prompt) {
-  const res = await fetch("/api/chat", {
+  // Pick the first configured model and its API connection if available
+  const model = state.models[0];
+  const api = model ? state.apis.find(a => a.id === model.apiId) : null;
+
+  const payload = {
+    prompt: prompt,
+    model: model ? model.modelName : "",
+    api_url: api ? api.url : "",
+    api_key: api ? api.key : ""
+  };
+
+  // Send request to Django backend /api/chat/
+  const res = await fetch("/api/chat/", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt })
+    body: JSON.stringify(payload)
   });
-  if (!res.ok) throw new Error(`Server returned ${res.status}`);
-  return res.json();
-}
 
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || `Server returned ${res.status}`);
+  }
+
+  return {
+    category: data.category || (model ? model.name : "Agent"),
+    answer: data.answer || "(empty response)"
+  };
+}
 // Handles form submission: shows the user message, requests an answer, and shows the result
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
