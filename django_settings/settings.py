@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -73,15 +74,34 @@ WSGI_APPLICATION = 'django_settings.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-        'OPTIONS': {
-            'init_command': 'PRAGMA foreign_keys = ON;',
+USE_SQLITE = os.getenv('USE_SQLITE', 'False').lower() in ('true', '1', 't', 'yes')
+WORKSPACE_ALLOW_LOCAL_ACCESS = os.getenv('WORKSPACE_ALLOW_LOCAL_ACCESS', 'True').lower() in ('true', '1', 'yes')
+OLLAMA_DEFAULT_URL = os.getenv('OLLAMA_DEFAULT_URL', 'http://localhost:11434').rstrip('/')
+OLLAMA_LOOPBACK_HOST = os.getenv('OLLAMA_LOOPBACK_HOST', '')
+OLLAMA_REQUEST_TIMEOUT = int(os.getenv('OLLAMA_REQUEST_TIMEOUT', '180'))
+
+if USE_SQLITE:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+            'OPTIONS': {
+                'init_command': 'PRAGMA foreign_keys = ON;',
             },
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv('DB_NAME', 'devops_db'),
+            'USER': os.getenv('DB_USER', 'postgres'),
+            'PASSWORD': os.getenv('DB_PASSWORD', 'postgres'),
+            'HOST': os.getenv('DB_HOST', 'localhost'),
+            'PORT': os.getenv('DB_PORT', '5432'),
+            'OPTIONS': {'connect_timeout': int(os.getenv('DB_CONNECT_TIMEOUT', '5'))},
+        }
+    }
 
 
 # Password validation

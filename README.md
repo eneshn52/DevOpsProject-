@@ -1,4 +1,12 @@
 # DevOpsProject-
+[Workspace API, PostgreSQL setup, and verification](WORKSPACE_API.md)
+
+[Implemented features and future roadmap](PROJECT_STATUS.md)
+
+[Docker setup and startup instructions](DOCKER.md)
+
+Saved task planning is available from **Task plans** in the sidebar. Configure a master model, select a project, and enter a request to generate tasks with validated dependencies, expected outputs, and acceptance criteria. Plans are stored in PostgreSQL; automatic routing and execution are subsequent features.
+
 CM6453: Distributed AI Software Development Platform
 
 This project is a web-based software system based on a Distributed Multi-Agent Architecture, developed for the CM6453 Software Processes term project.
@@ -7,13 +15,13 @@ This project is a web-based software system based on a Distributed Multi-Agent A
 
 The main goal of this platform is to build a system of AI agents capable of analyzing long software requirements entered by a user (e.g., "Develop an online library management system") and transforming them into a fully functional web application.
 
-Instead of distributing tasks randomly, the system is managed by a Master Agent. The master agent decomposes the requirements into subtasks, evaluates the capabilities (coding, reasoning, context capacity, etc.) of available agents in the system, and assigns each task to the most suitable LLM-based agent (Frontend, Backend, Database, Testing, Integration).
+The target architecture uses a Master Agent to decompose requirements, evaluate available specialists, and propose task assignments. Saved task decomposition is implemented. Capability evaluation, automatic assignment, and distributed execution remain planned work; see the status document above for the current boundary.
 
 🛠 Technologies Used
 
-Backend: Python, Django, Django REST Framework (DRF)
+Backend: Python and Django with same-origin JSON APIs.
 
-Database: SQLite (for the development phase)
+Database: PostgreSQL (primary); SQLite is an explicit local development option.
 
 Project Management: Trello, Scrum Methodology
 
@@ -81,7 +89,6 @@ pip install -r requirements.txt
 
 Update the Database:
 
-python manage.py makemigrations
 python manage.py migrate
 
 

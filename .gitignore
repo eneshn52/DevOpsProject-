@@ -3,6 +3,10 @@ venv/
 env/
 ENV/
 .env
+.env.*
+!.env.example
+!.env.docker.example
+backups/
 
 # Byte-compiled / optimized files
 __pycache__/

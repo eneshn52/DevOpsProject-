@@ -1,0 +1,23 @@
+# Optional CPU Ollama service. Add compose.ollama-gpu.yml for NVIDIA acceleration.
+services:
+  web:
+    environment:
+      OLLAMA_DEFAULT_URL: http://ollama:11434
+      OLLAMA_LOOPBACK_HOST: ollama
+    depends_on:
+      ollama:
+        condition: service_healthy
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  ollama_models:

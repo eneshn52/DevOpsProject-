@@ -17,10 +17,26 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 from django_modules import views
+from django_modules import workspace_api
+from django_modules import task_planning
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('', views.index, name='index'),
+    path('health/', views.health, name='health'),
     path('api/chat/', views.chat_api, name='chat_api'),
     path('api/chat', views.chat_api, name='chat_api_no_slash'),
+    path('api/workspace/', workspace_api.workspace_detail, name='workspace'),
+    path('api/workspace/import/', workspace_api.import_workspace, name='workspace_import'),
+    path('api/projects/', workspace_api.projects, name='projects'),
+    path('api/projects/<int:project_id>/', workspace_api.project_detail, name='project_detail'),
+    path('api/projects/<int:project_id>/plans/', task_planning.project_plans, name='project_plans'),
+    path('api/projects/<int:project_id>/plans/<uuid:plan_id>/', task_planning.plan_detail, name='plan_detail'),
+    path('api/conversations/', workspace_api.conversations, name='conversations'),
+    path('api/conversations/<uuid:conversation_id>/', workspace_api.conversation_detail, name='conversation_detail'),
+    path('api/connections/', workspace_api.connections, name='connections'),
+    path('api/connections/<uuid:connection_id>/', workspace_api.connection_detail, name='connection_detail'),
+    path('api/agents/', workspace_api.agents, name='agents'),
+    path('api/agents/<int:agent_id>/', workspace_api.agent_detail, name='agent_detail'),
+    path('api/master/', workspace_api.master, name='master'),
 ]

@@ -1,0 +1,4 @@
+# Requires NVIDIA GPU passthrough to Docker Linux containers.
+services:
+  ollama:
+    gpus: all
