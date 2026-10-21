@@ -11,13 +11,19 @@ CM6453: Distributed AI Software Development Platform
 
 This project is a web-based software system based on a Distributed Multi-Agent Architecture, developed for the CM6453 Software Processes term project.
 
-🚀 About the Project
+
+
+CM6453: Distributed AI Software Development Platform
+
+This project is a web-based software system based on a Distributed Multi-Agent Architecture, developed for the CM6453 Software Processes term project.
+
+ About the Project
 
 The main goal of this platform is to build a system of AI agents capable of analyzing long software requirements entered by a user (e.g., "Develop an online library management system") and transforming them into a fully functional web application.
 
 The target architecture uses a Master Agent to decompose requirements, evaluate available specialists, and propose task assignments. Saved task decomposition is implemented. Capability evaluation, automatic assignment, and distributed execution remain planned work; see the status document above for the current boundary.
 
-🛠 Technologies Used
+ Technologies Used
 
 Backend: Python and Django with same-origin JSON APIs.
 
@@ -27,74 +33,29 @@ Project Management: Trello, Scrum Methodology
 
 Version Control: Git & GitHub
 
-🔄 Scrum and Sprint Plan (10 Weeks)
+✅What We Have Done So Far
 
-The project consists of 5 iterations (sprints), each lasting 2 weeks:
+A short, plain description of each piece of the system that already works:
 
-Sprint 1: Foundation, requirements, project registration (Storage) system setup, and Master Agent prototype.
+Workspace interface: A web UI with a sidebar, conversation area, agent panel, dark/light themes and keyboard shortcuts. Built with Django templates, plain JavaScript and CSS (no separate frontend build).
 
-Sprint 2: Agent management, model capability evaluation, and task assignment algorithm.
+Projects (FR-2): Users can create and select projects. Each project stores its name, requirements, summary, creation date and status.
 
-Sprint 3: Distributed development, inter-agent communication, and code generation.
+PostgreSQL persistence: Projects, conversations, messages, agents, API connections, task plans, tasks and their dependencies are stored on the server, so data survives a page reload or a different browser.
 
-Sprint 4: Integration, automated testing, Code Review agent, and error recovery.
+Master chat: The user talks to a configured master model (served by Ollama). Replies are saved, and repeating the same request does not generate it twice.
 
-Sprint 5: End-to-end testing, dashboard completion, and final demo.
+Agent configuration: Up to five specialist agents can be saved with a model, role, machine label and API connection. API keys stay on the server and are never returned to the browser.
 
-🌿 Git and Branching Strategy
+Task decomposition (FR-11, FR-12): The master turns a project request into 1-20 structured tasks. Each task has a type, instructions, required capabilities, expected output and acceptance criteria. Dependencies between tasks are validated (no missing references, self-dependencies or cycles) and the plan is saved atomically.
 
-To prevent code conflicts and maintain a clean history, a Feature Branch workflow is implemented:
+Live agent monitoring (FR-7): The agent panel shows, for every agent, its status (Idle / Busy / Offline), the task it is working on, its queue length (tasks assigned but not started), the last response time and the last heartbeat. The UI polls `GET /api/agents/status/` every 2 seconds, only while the panel is visible. Tests: `django_modules/test_agent_status.py`.
 
-Main Branches:
+Docker runtime: A container image (Gunicorn, WhiteNoise) and a Docker Compose setup run Django together with PostgreSQL. Optional Ollama CPU/GPU overrides are included. See DOCKER.md.
 
-main: Contains only working, tested, and production-ready code.
-
-develop: The active development branch. All completed tasks are first merged here.
-
-Creating a New Branch:
-
-Create a new branch from develop for each Trello card.
-
-Naming convention: feature/[Trello-Card-Code]-[Short-Description]
-
-Example: git checkout -b feature/FR-2-project-creation
-
-Pushing and Merging Code:
-
-When the task is completed, push the code to GitHub.
-
-Open a Pull Request (PR). Once it passes Code Review, merge it into the develop branch.
-
-💻 Setup and Execution
-
-Follow these steps to run the project in your local environment:
-
-Clone the Repository:
-
-git clone [REPO_URL]
-cd [REPO_FOLDER]
+Tests: Automated tests cover the workspace API, access control, request replay, planning validation, concurrency, migrations and agent status. Run them with `python manage.py test`.
 
 
-Create and Activate a Virtual Environment:
-
-python -m venv venv
-source venv/bin/activate  # For Mac/Linux
-venv\Scripts\activate     # For Windows
+Worker registration and heartbeats (FR-4, FR-6), capability scoring and benchmarks (FR-8, FR-9), automatic task assignment (FR-14), distributed task execution, automated testing/review of generated code, and integration of the results are planned for the next sprints. The monitoring panel will show real data once heartbeats and assignment exist. 
 
 
-Install Required Packages:
-
-pip install -r requirements.txt
-
-
-Update the Database:
-
-python manage.py migrate
-
-
-Start the Server:
-
-python manage.py runserver
-
-
-You can view the system by navigating to http://127.0.0.1:8000/ in your browser.
