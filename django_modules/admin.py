@@ -82,7 +82,7 @@ class AIModelAdmin(admin.ModelAdmin):
 
 @admin.register(Agent)
 class AgentAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'role', 'machine', 'ai_model', 'api_connection', 'status', 'context_window', 'last_heartbeat')
+    list_display = ('id', 'name', 'role', 'machine', 'ai_model', 'api_connection', 'status', 'current_task', 'context_window', 'last_heartbeat')
     list_filter = ('status', 'ai_model')
     search_fields = ('name', 'machine')
     inlines = [AgentCapabilityScoreInline]

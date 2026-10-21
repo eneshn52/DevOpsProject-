@@ -1,6 +1,12 @@
 """Check readiness responses and container-only model address translation."""
 import io
 import json
+import os
+import subprocess
+import sys
+from importlib.util import find_spec
+from pathlib import Path
+from unittest import skipUnless
 from unittest.mock import patch
 
 from django.db import OperationalError
@@ -50,3 +56,50 @@ class ModelAddressTests(SimpleTestCase):
         request = call.call_args.args[0]
         self.assertEqual(request.full_url, 'http://ollama:11434/api/chat')
         self.assertEqual(request.get_header('Authorization'), 'Bearer test-key')
+
+
+BROWSER_RELOAD_PROBE = """
+import importlib.util, json, sys
+if sys.argv[1] == 'missing':
+    original = importlib.util.find_spec
+    importlib.util.find_spec = lambda name, *args: None if name == 'django_browser_reload' else original(name, *args)
+import django
+django.setup()
+from django.conf import settings
+from django.core.management import call_command
+from django.urls import Resolver404, resolve
+call_command('check', stdout=open(__import__('os').devnull, 'w'))
+try:
+    resolve('/__reload__/events/'); routed = True
+except Resolver404:
+    routed = False
+print(json.dumps({'enabled': settings.BROWSER_RELOAD, 'app': 'django_browser_reload' in settings.INSTALLED_APPS,
+                  'middleware': settings.MIDDLEWARE[-1] == 'django_browser_reload.middleware.BrowserReloadMiddleware',
+                  'anyMiddleware': any(item.startswith('django_browser_reload.') for item in settings.MIDDLEWARE), 'routed': routed}))
+"""
+
+
+class BrowserReloadSettingsTests(SimpleTestCase):
+    def probe(self, settings_module, mode='installed'):
+        """Load a settings module in a fresh interpreter and report how browser reload is wired."""
+        env = {**os.environ, 'DJANGO_SETTINGS_MODULE': settings_module}
+        result = subprocess.run([sys.executable, '-c', BROWSER_RELOAD_PROBE, mode], capture_output=True, text=True,
+                                cwd=Path(__file__).resolve().parent.parent, env=env, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout.strip().splitlines()[-1])
+
+    @skipUnless(find_spec('django_browser_reload'), 'django-browser-reload is a development-only dependency')
+    def test_debug_development_settings_enable_browser_reload(self):
+        """Register the app, final middleware, and reload URL for native DEBUG development."""
+        self.assertEqual(self.probe('django_settings.settings'),
+                         {'enabled': True, 'app': True, 'middleware': True, 'anyMiddleware': True, 'routed': True})
+
+    def test_container_settings_never_enable_browser_reload(self):
+        """Keep browser reload out of the non-DEBUG container configuration."""
+        self.assertEqual(self.probe('django_settings.docker'),
+                         {'enabled': False, 'app': False, 'middleware': False, 'anyMiddleware': False, 'routed': False})
+
+    def test_missing_package_does_not_break_startup(self):
+        """Start and pass system checks when the development package is not installed."""
+        self.assertEqual(self.probe('django_settings.settings', 'missing'),
+                         {'enabled': False, 'app': False, 'middleware': False, 'anyMiddleware': False, 'routed': False})

@@ -27,3 +27,8 @@ staticfiles/
 
 # Logs
 *.log
+
+# Worker configuration may contain a password
+worker/config.json
+
+__pycache__/

@@ -87,7 +87,7 @@
             <button class="add-specialist" id="addSpecialistBtn"><span data-icon="plus"></span>Add specialist</button>
             <div class="connection-note"><span data-icon="network"></span><p>Bring your own team<span>Connect models on your other computers through API connections.</span></p></div>
           </div>
-          <div class="panel-footer"><span class="status-dot"></span><span>Live monitoring is not connected</span></div>
+          <div class="panel-footer"><span class="status-dot" id="liveStatusDot" aria-hidden="true"></span><span id="liveStatusText">Live status starts when the workspace loads</span></div>
         </aside>
       </div>
       <footer class="statusbar"><span><span data-icon="folder"></span><span data-project-name>Workspace</span></span><span id="connectionStatus">Connecting to database...</span><button id="shortcutsBtn" title="Keyboard shortcuts"><span data-icon="keyboard"></span><span>Shortcuts</span></button></footer>

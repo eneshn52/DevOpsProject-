@@ -34,8 +34,9 @@ All writes require Django CSRF protection. The frontend sends `X-CSRFToken` and 
 | `/api/conversations/{uuid}/` | GET, PATCH, DELETE | Read messages, rename, soft-delete; PATCH `deleted: false` restores |
 | `/api/connections/` | GET, POST | List endpoints or save `name`, `url`, and optional `key` |
 | `/api/connections/{uuid}/` | PATCH, DELETE | Edit/remove; `clearKey: true` removes a saved key |
-| `/api/agents/` | GET, POST | Specialists with `name`, `modelName`, `apiId`, and `role` |
+| `/api/agents/` | GET, POST | Specialists with `name`, `modelName`, `apiId`, and `role`. Responses include `status`, `online` (heartbeat within 30 s), `lastHeartbeat`, and `lastSeenSeconds` (`null` if never) |
 | `/api/agents/{id}/` | PATCH, DELETE | Edit or remove a specialist |
+| `/api/agents/{id}/heartbeat/` | POST | Worker heartbeat every 10 s: `alive`, `status` (`IDLE`/`BUSY`), `currentTaskId` (required while busy). No CSRF token needed. Specialists silent for 30 s are marked `OFFLINE` |
 | `/api/master/` | GET, PUT, DELETE | Read, configure, or remove the single master |
 | `/api/chat/` | POST | Send `prompt`, `conversationId`, and UUID `requestId` |
 | `/api/workspace/import/` | POST | Import UUID `id`, legacy `workspace`, optional `projectId` |
