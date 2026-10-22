@@ -14,11 +14,13 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+from django.conf import settings
 from django.contrib import admin
-from django.urls import path
+from django.urls import include, path
 from django_modules import views
 from django_modules import workspace_api
 from django_modules import task_planning
+from django_modules import agent_heartbeat
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -38,5 +40,10 @@ urlpatterns = [
     path('api/connections/<uuid:connection_id>/', workspace_api.connection_detail, name='connection_detail'),
     path('api/agents/', workspace_api.agents, name='agents'),
     path('api/agents/<int:agent_id>/', workspace_api.agent_detail, name='agent_detail'),
+    path('api/agents/<int:agent_id>/heartbeat/', agent_heartbeat.heartbeat, name='agent_heartbeat'),
+    path('api/agents/<int:agent_id>/heartbeat', agent_heartbeat.heartbeat, name='agent_heartbeat_no_slash'),
     path('api/master/', workspace_api.master, name='master'),
 ]
+
+if settings.BROWSER_RELOAD:
+    urlpatterns.append(path('__reload__/', include('django_browser_reload.urls')))

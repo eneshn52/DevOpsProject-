@@ -1,0 +1,12 @@
+{
+  "server_url": "http://127.0.0.1:8000",
+  "agent_name": "Qwen",
+  "agent_id": null,
+  "ollama_url": "http://127.0.0.1:11434",
+  "ollama_key": "",
+  "model": "",
+  "interval": 10,
+  "timeout": 5,
+  "username": "",
+  "password": ""
+}

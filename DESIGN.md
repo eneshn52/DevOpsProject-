@@ -14,6 +14,7 @@ colors:
   accent: "#A5C9B0"
   on-accent: "#17251B"
   error: "#F0A8A8"
+  online: "#6FCF8E"
   light-canvas: "#FAFAFA"
   light-sidebar: "#F1F2F3"
   light-surface: "#FFFFFF"
@@ -25,6 +26,7 @@ colors:
   light-accent: "#345D40"
   light-on-accent: "#FFFFFF"
   light-error: "#A52C36"
+  light-online: "#1F7A43"
 typography:
   headline-lg: { fontFamily: Segoe UI, fontSize: 36px, fontWeight: 500, lineHeight: 1.2, letterSpacing: -0.04em }
   headline-md: { fontFamily: Segoe UI, fontSize: 22px, fontWeight: 500, lineHeight: 1.35, letterSpacing: -0.025em }
@@ -70,7 +72,7 @@ Navigation uses 6px corners, controls 9px, dialogs 14px, and the composer 18px. 
 - Sidebar: new chat, search, conversation history, agent access, and settings.
 - Conversation: concise empty state, useful prompt starters, readable user messages, code blocks, visible pending and error states.
 - Composer: auto-growing textarea, explicit master-model selection, send/stop action, and keyboard guidance.
-- Agent panel: local master plus up to five configured remote models; distinguish configuration from live health.
+- Agent panel: local master plus up to five configured remote models; distinguish configuration from live health. Specialists show an Online/Offline label with a status dot, using the online token only when the server reports a heartbeat within the timeout; the label never relies on color alone.
 - Settings: editable API connections and model roles backed by Django. Keep saved API keys on the server and provide an explicit clear-key action. An unconfigured master remains visibly unconfigured.
 - Dialogs: labelled controls, explicit close actions, focus containment, Escape handling, and restored focus.
 - Task plans: a project-scoped dialog with a request form, saved plan history, and readable task details. Show dependencies, capabilities, outputs, and acceptance criteria; distinguish saved pending tasks from execution. Reuse existing surface, border, type, and spacing tokens.

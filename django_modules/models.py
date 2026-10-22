@@ -1,5 +1,7 @@
 import uuid
+from datetime import timedelta
 
+from django.conf import settings
 from django.db import models
 from django.core.exceptions import ValidationError
 from django.utils import timezone
@@ -53,9 +55,33 @@ class Agent(models.Model):
     registered_at = models.DateTimeField(default=timezone.now)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='GENERAL')
     api_connection = models.ForeignKey('APIConnection', on_delete=models.SET_NULL, null=True, blank=True, related_name='agents')
+    current_task = models.ForeignKey('Task', on_delete=models.SET_NULL, null=True, blank=True, related_name='reporting_agents', help_text="Task the worker reported in its latest heartbeat")
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=['role'], condition=models.Q(role='MASTER'), name='workspace_single_master')]
+
+    @staticmethod
+    def heartbeat_cutoff(now=None):
+        """Return the heartbeat time at which an agent stops counting as online."""
+        return (now or timezone.now()) - timedelta(seconds=settings.AGENT_HEARTBEAT_TIMEOUT)
+
+    @classmethod
+    def mark_stale(cls, now=None):
+        """Mark specialists offline when their last heartbeat is older than the timeout."""
+        cutoff = cls.heartbeat_cutoff(now)
+        stale = models.Q(last_heartbeat__lte=cutoff) | models.Q(last_heartbeat__isnull=True)
+        return (cls.objects.exclude(role='MASTER').exclude(status='OFFLINE').filter(stale)
+                .update(status='OFFLINE', current_task=None))
+
+    def is_online(self, now=None):
+        """Report online at read time: a heartbeat less than the timeout ago, unless the worker signed off."""
+        return self.status != 'OFFLINE' and self.last_heartbeat is not None and self.last_heartbeat > self.heartbeat_cutoff(now)
+
+    def seconds_since_heartbeat(self, now=None):
+        """Return whole seconds since the last heartbeat, or None when none was received."""
+        if self.last_heartbeat is None:
+            return None
+        return max(0, int(((now or timezone.now()) - self.last_heartbeat).total_seconds()))
 
     def __str__(self):
         """Return a readable label for this database record."""

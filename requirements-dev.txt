@@ -1,0 +1,5 @@
+# Local development only; never installed in the Docker image.
+-r requirements.txt
+pytest>=9.0
+pytest-django>=4.9
+django-browser-reload==1.21.0

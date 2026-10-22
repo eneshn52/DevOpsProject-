@@ -4,6 +4,9 @@ import os
 from .settings import *  # noqa: F403
 
 DEBUG = False
+BROWSER_RELOAD = False
+INSTALLED_APPS = [app for app in INSTALLED_APPS if app != 'django_browser_reload']  # noqa: F405
+MIDDLEWARE = [item for item in MIDDLEWARE if not item.startswith('django_browser_reload.')]  # noqa: F405
 SECRET_KEY = os.environ['DJANGO_SECRET_KEY'] if 'DJANGO_SECRET_KEY' in os.environ else SECRET_KEY  # noqa: F405
 ALLOWED_HOSTS = [host.strip() for host in os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1,[::1]').split(',') if host.strip()]
 WORKSPACE_ALLOW_LOCAL_ACCESS = False

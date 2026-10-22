@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
 import os
+from importlib.util import find_spec
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -51,6 +52,12 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+# Development-only browser auto-reload (requirements-dev.txt); skipped when DEBUG is off or the package is absent.
+BROWSER_RELOAD = DEBUG and find_spec('django_browser_reload') is not None
+if BROWSER_RELOAD:
+    INSTALLED_APPS.append('django_browser_reload')
+    MIDDLEWARE.append('django_browser_reload.middleware.BrowserReloadMiddleware')
+
 ROOT_URLCONF = 'django_settings.urls'
 
 TEMPLATES = [
@@ -79,6 +86,8 @@ WORKSPACE_ALLOW_LOCAL_ACCESS = os.getenv('WORKSPACE_ALLOW_LOCAL_ACCESS', 'True')
 OLLAMA_DEFAULT_URL = os.getenv('OLLAMA_DEFAULT_URL', 'http://localhost:11434').rstrip('/')
 OLLAMA_LOOPBACK_HOST = os.getenv('OLLAMA_LOOPBACK_HOST', '')
 OLLAMA_REQUEST_TIMEOUT = int(os.getenv('OLLAMA_REQUEST_TIMEOUT', '180'))
+AGENT_HEARTBEAT_INTERVAL = int(os.getenv('AGENT_HEARTBEAT_INTERVAL', '10'))
+AGENT_HEARTBEAT_TIMEOUT = int(os.getenv('AGENT_HEARTBEAT_TIMEOUT', '30'))
 
 if USE_SQLITE:
     DATABASES = {

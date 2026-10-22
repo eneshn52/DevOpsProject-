@@ -4,6 +4,7 @@
   const STORAGE_KEY = "multiagent_state_v1";
   const PREFERENCES_KEY = "multiagent_preferences_v1";
   const MAX_MODELS = 5;
+  const AGENT_STATUS_INTERVAL = 2000;
   const $ = /* Find a document element by its ID. */ (id) => document.getElementById(id);
   const uid = /* Generate a UUID for idempotent API operations. */ () => globalThis.crypto?.randomUUID?.() || "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, /* Replace this UUID token with a random hexadecimal digit. */ (character) => {
     const random = crypto.getRandomValues(new Uint8Array(1))[0] & 15;
@@ -44,6 +45,8 @@
   let creatingChat = null;
   let preparingSend = false;
   let pollTimer;
+  let agentStatusTimer;
+  let agentStatusSequence = 0;
   const pending = new Map();
   const drafts = new Map();
   const dialogOrigins = new WeakMap();
@@ -224,6 +227,7 @@
     }
     $("menuBtn").setAttribute("aria-expanded", String(mobile.matches ? sidebarOpen : !state.sidebarCollapsed));
     $("agentsBtn").setAttribute("aria-expanded", String(compact.matches ? agentsOpen : !state.agentsHidden));
+    scheduleAgentStatus(true);
   }
   /** Close temporary navigation and agent overlays. */
   function closePanels() {
@@ -258,6 +262,8 @@
   $("closeAgents").onclick = /* Close the agent panel and restore focus to its toggle. */ () => { toggleAgents(false); $("agentsBtn").focus(); };
   $("panelBackdrop").onclick = /* Dismiss temporary panels and focus the composer. */ () => { closePanels(); $("input").focus(); };
   mobile.addEventListener("change", closePanels);
+  compact.addEventListener("change", /* Restart or stop status polling when the agent panel layout changes. */ () => scheduleAgentStatus(true));
+  document.addEventListener("visibilitychange", /* Pause status polling while the browser tab is hidden. */ () => scheduleAgentStatus(true));
   compact.addEventListener("change", closePanels);
 
   /** Open a modal dialog and remember where to restore keyboard focus. */
@@ -615,11 +621,71 @@
     model = model || { name: "Choose a master model", modelName: "Not configured" };
     const content = document.createDocumentFragment(), identity = node("div", "agent-identity"), avatar = node("span", "agent-avatar"), details = node("div");
     avatar.append(icon(isMaster ? "command" : "code"));
-    details.append(node("span", "agent-name", model.name || "Unnamed specialist"), node("span", "agent-model", model.modelName || "Choose a model"));
+    const nameRow = node("div", "agent-name-row");
+    nameRow.append(node("span", "agent-name", model.name || "Unnamed specialist"));
+    if (!isMaster) nameRow.append(agentStatus(model));
+    details.append(nameRow, node("span", "agent-model", model.modelName || "Choose a model"));
     identity.append(avatar, details);
     const meta = node("div", "agent-meta"), api = state.apis.find(/* Find the record matching this identifier. */ (item) => item.id === model.apiId);
     meta.append(node("span", "role-label", isMaster ? "Master" : roleNames[model.role] || "General"), node("span", "", !configured ? "Setup required" : api?.name || (isMaster ? "Local endpoint" : "No connection")));
     content.append(identity, meta); return content;
+  }
+  /** Describe the time since an agent's last heartbeat as reported by the server. */
+  function lastSeenText(seconds) {
+    if (seconds === null || seconds === undefined) return "Last seen: Never";
+    const [value, unit] = seconds < 60 ? [seconds, "second"] : seconds < 3600 ? [Math.floor(seconds / 60), "minute"] : seconds < 86400 ? [Math.floor(seconds / 3600), "hour"] : [Math.floor(seconds / 86400), "day"];
+    return `Last seen: ${value} ${unit}${value === 1 ? "" : "s"} ago`;
+  }
+  /** Show the server's heartbeat verdict on a status indicator; the label never relies on color alone. */
+  function applyAgentStatus(element, model) {
+    element.classList.toggle("online", Boolean(model.online));
+    element.title = lastSeenText(model.lastSeenSeconds);
+    element.querySelector(".agent-status-label").textContent = model.online ? "Online" : "Offline";
+  }
+  /** Build a specialist's heartbeat indicator with a decorative dot and a text label. */
+  function agentStatus(model) {
+    const element = node("span", "agent-status"); element.dataset.agentStatus = model.id || "";
+    const dot = node("span", "agent-status-dot"); dot.setAttribute("aria-hidden", "true");
+    element.append(dot, node("span", "agent-status-label"));
+    applyAgentStatus(element, model); return element;
+  }
+  /** Summarize live status polling in the agent panel footer. */
+  function renderLiveStatus(mode = "live") {
+    const online = state.models.filter(/* Keep specialists the server reports online. */ (model) => model.online).length;
+    const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    $("liveStatusDot").className = `status-dot${mode === "live" ? " live" : mode === "failed" ? " failed" : ""}`;
+    $("liveStatusText").textContent = mode === "failed" ? `Live status unavailable · retrying every ${AGENT_STATUS_INTERVAL / 1000}s`
+      : mode === "paused" ? "Live status paused while hidden"
+      : `Live · ${online} of ${state.models.length} specialist${state.models.length === 1 ? "" : "s"} online · updated ${time}`;
+  }
+  /** Report whether the agent panel is currently visible to the user. */
+  function agentsVisible() {
+    return document.visibilityState === "visible" && (compact.matches ? workspace.classList.contains("agents-open") : !state.agentsHidden);
+  }
+  /** Poll specialist status while the agent panel is visible, and stop polling otherwise. */
+  function scheduleAgentStatus(immediate = false) {
+    clearTimeout(agentStatusTimer);
+    if (!workspaceReady || !agentsVisible()) { agentStatusSequence++; if (workspaceReady) renderLiveStatus("paused"); return; }
+    agentStatusTimer = setTimeout(refreshAgentStatus, immediate ? 0 : AGENT_STATUS_INTERVAL);
+  }
+  /** Fetch current specialist status and update the indicators without rebuilding the panel. */
+  async function refreshAgentStatus() {
+    const sequence = ++agentStatusSequence;
+    try {
+      const agents = await apiRequest("/api/agents/");
+      if (sequence !== agentStatusSequence) return;
+      const latest = new Map(agents.map(/* Index each specialist by its identifier. */ (agent) => [agent.id, agent]));
+      for (const model of state.models) {
+        const fresh = latest.get(model.id);
+        if (fresh) Object.assign(model, { status: fresh.status, online: fresh.online, lastSeenSeconds: fresh.lastSeenSeconds, lastHeartbeat: fresh.lastHeartbeat });
+      }
+      $("specialistList").querySelectorAll("[data-agent-status]").forEach(/* Update this indicator from the latest status. */ (element) => {
+        const model = state.models.find(/* Find the record matching this identifier. */ (item) => item.id === element.dataset.agentStatus);
+        if (model) applyAgentStatus(element, model);
+      });
+      renderLiveStatus();
+    } catch { if (sequence === agentStatusSequence) renderLiveStatus("failed"); }
+    finally { if (sequence === agentStatusSequence) scheduleAgentStatus(); }
   }
   /** Refresh the master, specialists, and saved connection counts. */
   function renderAgents() {
@@ -643,7 +709,8 @@
       $("specialistList").append(button);
     }
     $("addSpecialistBtn").disabled = state.models.length >= MAX_MODELS;
-    updateSend();
+    if (workspaceReady) renderLiveStatus();
+    updateSend(); scheduleAgentStatus();
   }
   /** Populate a connection selector with saved endpoints only. */
   function connectionOptions(select, selected, local = false) {

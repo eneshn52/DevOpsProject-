@@ -137,6 +137,7 @@ def agent_json(agent):
     return {'id': str(agent.pk), 'name': agent.name, 'modelName': agent.ai_model.ollama_name if agent.ai_model else '',
             'apiId': str(agent.api_connection_id) if agent.api_connection_id else '', 'role': agent.role,
             'machine': agent.machine, 'contextWindow': agent.context_window, 'status': agent.status,
+            'online': agent.is_online(), 'lastSeenSeconds': agent.seconds_since_heartbeat(),
             'lastHeartbeat': agent.last_heartbeat.isoformat() if agent.last_heartbeat else None, 'collapsed': True}
 
 
@@ -177,6 +178,7 @@ def workspace_detail(request):
     projects = list(Project.objects.filter(archived_at__isnull=True).order_by('created_at', 'pk'))
     selected = next((item for item in projects if str(item.pk) == request.GET.get('projectId')), projects[0] if projects else None)
     chats = conversation_page(request, Conversation.objects.filter(project=selected, deleted_at__isnull=True)) if selected else {'items': [], 'nextOffset': None}
+    Agent.mark_stale()
     return {'name': Workspace.objects.get(pk=1).name, 'database': 'postgresql' if settings.DATABASES['default']['ENGINE'].endswith('postgresql') else 'sqlite',
             'projects': [project_json(item) for item in projects], 'projectId': str(selected.pk) if selected else None,
             'chats': chats, 'master': agent_json(master_record()),
@@ -349,6 +351,7 @@ def save_agent(agent, data, master=False):
 def agents(request):
     """List specialists or create one within the workspace capacity limit."""
     if request.method == 'GET':
+        Agent.mark_stale()
         return [agent_json(item) for item in Agent.objects.exclude(role='MASTER').select_related('ai_model').order_by('pk')]
     data = payload(request, AGENT_FIELDS)
     with transaction.atomic():
