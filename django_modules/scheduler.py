@@ -7,9 +7,11 @@ unsaved instances, e.g. Agent(pk=1, status='IDLE', last_heartbeat=..., context_w
 
 # --- Constants (tune later, keep them here so they are easy to find) ---
 # The heartbeat timeout lives in settings.AGENT_HEARTBEAT_TIMEOUT (FR-6); reuse Agent.is_online().
-CONTEXT_SAFETY = 0.8                       # use at most 80% of the context window
-DEFAULT_EST_TOKENS = 2000                  # the planner does not fill est_tokens yet
-DEFAULT_MAX_TOKENS = 2048                  # the planner does not fill max_tokens yet
+CONTEXT_SAFETY = 0.8         # use at most 80% of the context window
+DEFAULT_EST_TOKENS = 2000    # the planner does not fill est_tokens yet
+DEFAULT_MAX_TOKENS = 2048    # the planner does not fill max_tokens yet
+QUEUE_PENALTY = 10           # λ: points subtracted per task already queued on the agent
+DEFAULT_WEIGHTS = {'coding': 0.25, 'reasoning': 0.25, 'context': 0.25, 'speed': 0.25}  # task types without their own weights
 
 
 def is_eligible(agent, task, now, failed_agent_ids):
@@ -29,11 +31,10 @@ def is_eligible(agent, task, now, failed_agent_ids):
       3. Not failed before: agent.pk not in failed_agent_ids.
     """
     # Rule 1: online?
-    if agent is None or not agent.is_online(now):
+    if not agent.is_online(now):
         return False
 
     # Rule 2: does the task fit the context window?
-
     if agent.context_window is None:
         return False
     est = task.est_tokens if task.est_tokens is not None else DEFAULT_EST_TOKENS
@@ -42,12 +43,11 @@ def is_eligible(agent, task, now, failed_agent_ids):
         return False
 
     # Rule 3: has this agent already failed this task?
-
-    if agent is None or agent.pk in failed_agent_ids:
+    if agent.pk in failed_agent_ids:
         return False
+
     return True
 
-QUEUE_PENALTY = 10  # λ: points subtracted per task already queued on the agent
 
 def score(agent_scores, weights, queued):
     """Return S(a, t): the weighted average of the agent's scores minus a queue penalty.
@@ -58,7 +58,7 @@ def score(agent_scores, weights, queued):
 
     S = sum(weight * score for each metric) / sum(weights)  -  QUEUE_PENALTY * queued
     A metric missing from agent_scores counts as 0.
-    If the weights add up to 0, raise ValueError (a broken weight table should fail loudly).
+    If the weights do not add up to a positive number, raise ValueError (a broken weight table should fail loudly).
     """
     total_weight = sum(weights.values())
     if total_weight <= 0:
@@ -68,6 +68,60 @@ def score(agent_scores, weights, queued):
 
     return weighted_sum / total_weight - QUEUE_PENALTY * queued
 
-def pick_task_for(agent, ready_tasks, online_agents, now):
-    """Return the task this agent should take, or None. (Third function.)"""
-    raise NotImplementedError
+
+def pick_task_for(agent, ready_tasks, candidates, now, scores, queued, failed, weights):
+    """Return the task the asking agent should take now, or None.
+
+    agent:       the Agent asking for work
+    ready_tasks: list of ready Tasks, oldest first (the caller sorts them)
+    candidates:  list of all specialist Agents, including the asking one
+    now:         the master's current time
+    scores:      {agent_pk: {'coding': .., 'reasoning': .., 'context': .., 'speed': ..}}
+    queued:      {agent_pk: number of tasks already assigned}   (missing = 0)
+    failed:      {task_pk: set of agent pks that failed it}      (missing = empty set)
+    weights:     {task_type: {'coding': .., 'reasoning': .., 'context': .., 'speed': ..}}
+
+    Rules:
+      - An agent with no entry in `scores` (not benchmarked yet) never takes a task.
+      - For each task, oldest first:
+          * if the asking agent is not eligible, skip the task;
+          * score every eligible candidate (eligible + has scores);
+          * if the asking agent has the highest score, return this task;
+          * otherwise move on to the next task (a better agent will ask for it).
+      - On a tie for the highest score, the asking agent wins (it is idle and here now).
+      - Task types missing from `weights` use DEFAULT_WEIGHTS.
+      - No task won: return None.
+
+    This function only decides; it does not claim or save anything.
+    """
+    # An agent that has not been benchmarked cannot take anything
+    if agent.pk not in scores:
+        return None
+
+    for task in ready_tasks:
+        failed_agents = failed.get(task.pk, set())
+        if not is_eligible(agent, task, now, failed_agents):
+            continue
+
+        task_weights = weights.get(task.type, DEFAULT_WEIGHTS)
+        asking_agent_score = None
+        highest_score = float('-inf')
+
+        for candidate in candidates:
+            if candidate.pk not in scores:
+                continue
+            if not is_eligible(candidate, task, now, failed_agents):
+                continue
+
+            candidate_score = score(scores[candidate.pk], task_weights, queued.get(candidate.pk, 0))
+
+            if candidate.pk == agent.pk:
+                asking_agent_score = candidate_score
+            if candidate_score > highest_score:
+                highest_score = candidate_score
+
+        # The asking agent's own score is part of highest_score, so >= means "best, or tied for best"
+        if asking_agent_score is not None and asking_agent_score >= highest_score:
+            return task
+
+    return None
