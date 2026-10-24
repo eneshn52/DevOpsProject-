@@ -3,7 +3,8 @@ from datetime import timedelta
 from django.utils import timezone
 
 from .models import Agent, Task
-from .scheduler import is_eligible
+import pytest
+from .scheduler import is_eligible, score
 
 NOW = timezone.now()
 
@@ -62,3 +63,30 @@ def test_unknown_context_window_not_eligible():
 
 def test_agent_that_failed_before_not_eligible():
     assert is_eligible(make_agent(), make_task(), NOW, {1}) is False
+
+AGENT_A = {'coding': 90, 'reasoning': 85, 'context': 95, 'speed': 50}
+AGENT_C = {'coding': 95, 'reasoning': 70, 'context': 80, 'speed': 60}
+BACKEND = {'coding': 0.6, 'reasoning': 0.2, 'context': 0.1, 'speed': 0.1}
+FRONTEND = {'coding': 0.6, 'reasoning': 0.1, 'context': 0.1, 'speed': 0.2}
+CODE_REVIEW = {'coding': 0.3, 'reasoning': 0.5, 'context': 0.2, 'speed': 0.0}
+
+def test_score_agent_a_backend():
+    assert score(AGENT_A, BACKEND, 0) == pytest.approx(85.5)
+
+def test_score_agent_c_frontend():
+    assert score(AGENT_C, FRONTEND, 0) == pytest.approx(84.0)
+
+def test_score_agent_a_backend_with_queue():
+    assert score(AGENT_A, BACKEND, 1) == pytest.approx(75.5)
+
+def test_score_agent_a_equal_weights():
+    weights = {'coding': 1, 'reasoning': 1, 'context': 1, 'speed': 1}
+    assert score(AGENT_A, weights, 0) == pytest.approx(80.0)
+
+def test_score_agent_a_code_review():
+    assert score(AGENT_A, CODE_REVIEW, 0) == pytest.approx(88.5)
+
+def test_score_agent_a_zero_weights():
+    weights = {'coding': 0.0, 'reasoning': 0.0, 'context': 0.0, 'speed': 0.0}
+    with pytest.raises(ValueError):
+        score(AGENT_A, weights, 0)

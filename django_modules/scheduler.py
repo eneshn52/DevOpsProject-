@@ -47,10 +47,26 @@ def is_eligible(agent, task, now, failed_agent_ids):
         return False
     return True
 
-def score(agent_scores, weights, queued):
-    """Return S(a, t) as a float. (Next function; spec comes after is_eligible.)"""
-    raise NotImplementedError
+QUEUE_PENALTY = 10  # λ: points subtracted per task already queued on the agent
 
+def score(agent_scores, weights, queued):
+    """Return S(a, t): the weighted average of the agent's scores minus a queue penalty.
+
+    agent_scores: dict like {'coding': 90, 'reasoning': 85, 'context': 95, 'speed': 50}
+    weights:      dict with the same four keys, e.g. backend {'coding': 0.6, 'reasoning': 0.2, 'context': 0.1, 'speed': 0.1}
+    queued:       number of tasks already assigned to this agent (Q)
+
+    S = sum(weight * score for each metric) / sum(weights)  -  QUEUE_PENALTY * queued
+    A metric missing from agent_scores counts as 0.
+    If the weights add up to 0, raise ValueError (a broken weight table should fail loudly).
+    """
+    total_weight = sum(weights.values())
+    if total_weight <= 0:
+        raise ValueError("Weights must sum to a positive number.")
+
+    weighted_sum = sum(weight * agent_scores.get(metric, 0) for metric, weight in weights.items())
+
+    return weighted_sum / total_weight - QUEUE_PENALTY * queued
 
 def pick_task_for(agent, ready_tasks, online_agents, now):
     """Return the task this agent should take, or None. (Third function.)"""
