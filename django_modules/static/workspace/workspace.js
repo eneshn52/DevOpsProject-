@@ -326,6 +326,7 @@
         details.append(node("p", "", task.instructions));
         details.append(node("h4", "", "Dependencies"), node("p", "", task.dependsOn.length ? task.dependsOn.join(", ") : "None — can start when execution is available."));
         details.append(node("h4", "", "Required capabilities"), node("p", "", task.requiredCapabilities.join(", ")));
+        if (task.capabilityWeights) details.append(node("h4", "", "Capability weights"), node("p", "", Object.entries(task.capabilityWeights).map(/* Format each stored capability weight as a percentage. */ ([name, weight]) => `${name}: ${Math.round(weight * 100)}%`).join(", ")));
         details.append(node("h4", "", "Expected output"), node("p", "", task.expectedOutput));
         const criteria = node("ul");
         for (const criterion of task.acceptanceCriteria) criteria.append(node("li", "", criterion));

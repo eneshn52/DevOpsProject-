@@ -30,6 +30,7 @@ def task_json(task):
             'type': task.type, 'title': task.title, 'instructions': task.instructions,
             'expectedOutput': task.expected_output, 'acceptanceCriteria': task.acceptance_criteria,
             'requiredCapabilities': task.required_capabilities,
+            'capabilityWeights': task.capability_weights,
             'maxTokens': task.max_tokens or DEFAULT_MAX_TOKENS, 'attempt': task.attempts}
 
 
