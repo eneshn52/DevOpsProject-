@@ -158,3 +158,9 @@ MAILERS = {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
 }
+
+
+# FR-16 execution settings; existing settings are preserved.
+import json
+FR16_WORKER_TOKENS = json.loads(os.getenv('FR16_WORKER_TOKENS', '{}'))
+FR16_TASK_TIMEOUT = int(os.getenv('FR16_TASK_TIMEOUT', '180'))
