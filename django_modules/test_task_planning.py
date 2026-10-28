@@ -19,6 +19,7 @@ from django.utils import timezone
 from .admin import TaskDependencyForm
 from .models import AIModel, APIConnection, Agent, Project, Task, TaskDependency, TaskPlan
 from .task_planning import PLAN_SCHEMA
+from .task_weights import TASK_WEIGHTS
 
 
 def example_plan():
@@ -79,6 +80,28 @@ class TaskPlanningTests(TestCase):
         self.assertEqual(saved, data)
         self.assertNotIn('planner-secret', json.dumps(saved))
         self.assertNotIn('planner-secret', self.client.get(self.url).content.decode())
+
+    def test_classifies_all_task_types_and_exposes_persisted_weights(self):
+        """The master supplies types; Django assigns weights to every saved task and response."""
+        value = example_plan()
+        template = value['tasks'][0]
+        value['tasks'] = [dict(template, key=kind.lower(), type=kind, dependsOn=[]) for kind in TASK_WEIGHTS]
+        response = self.generate(value)
+        self.assertEqual(response.status_code, 201, response.content)
+        for row in response.json()['data']['tasks']:
+            self.assertEqual(row['capabilityWeights'], TASK_WEIGHTS[row['type']])
+            self.assertEqual(Task.objects.get(pk=row['id']).capability_weights, row['capabilityWeights'])
+
+    def test_master_cannot_supply_weights_or_unsupported_types(self):
+        """Reject invented classifications and injected weights before any tasks are persisted."""
+        for extra in [{'type': 'MASTER'}, {'type': 'INVENTED'}, {'capabilityWeights': {'coding': 1}}]:
+            with self.subTest(extra=extra):
+                value = example_plan()
+                value['tasks'][0].update(extra)
+                response = self.generate(value, body={'id': str(uuid.uuid4()), 'request': 'Build login.'})
+                self.assertEqual(response.status_code, 502, response.content)
+                self.assertEqual(response.json()['data']['errorCode'], 'INVALID_PLAN')
+                self.assertFalse(Task.objects.exists())
 
     def test_uses_server_model_credentials_and_project_context(self):
         """Send bounded project context and the saved master configuration to Ollama."""

@@ -7,6 +7,8 @@ from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.core.validators import MinValueValidator, MaxValueValidator
 
+from .task_weights import TASK_WEIGHTS, capability_weights_for
+
 
 # ==========================================
 # 1. AI Infrastructure & Capabilities
@@ -234,6 +236,7 @@ class TaskPlan(models.Model):
 
 
 class Task(models.Model):
+    TYPE_CHOICES = [(value, value.title()) for value in TASK_WEIGHTS]
     STATUS_CHOICES = [
         ('PENDING', 'Pending'),
         ('ASSIGNED', 'Assigned'),
@@ -246,6 +249,7 @@ class Task(models.Model):
     plan = models.ForeignKey(TaskPlan, on_delete=models.CASCADE, null=True, blank=True, related_name='tasks')
     plan_key = models.CharField(max_length=64, blank=True)
     required_capabilities = models.JSONField(default=list, blank=True)
+    capability_weights = models.JSONField(default=dict, blank=True, editable=False)
     expected_output = models.TextField(blank=True)
     acceptance_criteria = models.JSONField(default=list, blank=True)
     assigned_agent = models.ForeignKey(
@@ -256,10 +260,10 @@ class Task(models.Model):
         related_name='assigned_tasks',
         db_column='assigned_agent_id'
     )
-    type = models.CharField(max_length=50, default='GENERAL', help_text="e.g. FRONTEND, BACKEND, DATABASE, TESTING, INTEGRATION")
+    type = models.CharField(max_length=50, choices=TYPE_CHOICES, default='GENERAL', help_text="e.g. FRONTEND, BACKEND, DATABASE, TESTING, INTEGRATION")
     title = models.CharField(max_length=200)
     instructions = models.TextField(blank=True)
-    weights = models.FloatField(default=1.0)
+    weights = models.FloatField(default=1.0)  # Legacy complexity scalar, separate from capability weights.
     est_tokens = models.PositiveIntegerField(null=True, blank=True)
     max_tokens = models.PositiveIntegerField(null=True, blank=True)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='PENDING')
@@ -274,6 +278,18 @@ class Task(models.Model):
         super().clean()
         if self.plan_id and self.project_id != self.plan.project_id:
             raise ValidationError({'project': 'A task must belong to the same project as its plan.'})
+
+    def save(self, *args, **kwargs):
+        """Assign capability weights on creation/full saves and when the task type is saved."""
+        update_fields = kwargs.get('update_fields')
+        if update_fields is not None:
+            update_fields = set(update_fields)
+            kwargs['update_fields'] = update_fields
+        if update_fields is None or {'type', 'capability_weights'} & update_fields:
+            self.capability_weights = capability_weights_for(self.type)
+            if update_fields is not None:
+                kwargs['update_fields'] = update_fields | {'capability_weights'}
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         """Return a readable label for this database record."""

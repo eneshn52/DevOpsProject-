@@ -79,6 +79,36 @@ GET history returns `items` (20 per page, newest first) and `nextOffset`; pass `
 
 The planning dialog reloads saved history, displays generation failures, and polls in-flight attempts after a browser reload. Closing the dialog stops polling, not server generation. This stage is synchronous generation with persistent attempt recovery; it does not provide a background scheduler, automatic agent routing, durable execution, repository changes, or test execution. A master process failure requires a new generation after the old attempt expires. Larger plans can be handled as separate requests; automatic recursive decomposition is not implemented.
 
+## Task classification (FR-13)
+
+The master classifies each generated task using the validated `type` enum. Django assigns the required capability weights from `django_modules/task_weights.py` when creating/saving the task or saving a type change. Task types are independent of configured agent roles. The master must not supply weights: extra fields in its plan JSON are rejected.
+
+| Type | coding | reasoning | context | speed |
+| --- | --- | --- | --- | --- |
+| GENERAL | 0.25 | 0.25 | 0.25 | 0.25 |
+| REQUIREMENTS | 0.1 | 0.5 | 0.3 | 0.1 |
+| DATABASE | 0.4 | 0.4 | 0.1 | 0.1 |
+| BACKEND | 0.6 | 0.2 | 0.1 | 0.1 |
+| FRONTEND | 0.6 | 0.1 | 0.1 | 0.2 |
+| TESTING | 0.4 | 0.4 | 0.1 | 0.1 |
+| REVIEW | 0.3 | 0.5 | 0.2 | 0.0 |
+| INTEGRATION | 0.4 | 0.3 | 0.3 | 0.0 |
+| DOCUMENTATION | 0.1 | 0.3 | 0.2 | 0.4 |
+
+Weights are relative priorities summing to 1, not minimum agent scores or the textual `requiredCapabilities` list. For example, a BACKEND task's saved plan detail and `/api/agents/{id}/next-task/` response include:
+
+```json
+{"capabilityWeights": {"coding": 0.6, "reasoning": 0.2, "context": 0.1, "speed": 0.1}}
+```
+
+The task-plan dialog displays these weights as percentages, and admin displays them read-only. FR-14 uses the task's persisted weights before its type-table fallback; its scoring formula and eligibility checks remain unchanged. Migration 0008 assigns weights to existing tasks, retaining unknown legacy types with equal weights. New generated plans reject unknown types. The existing numeric `Task.weights` remains a separate legacy complexity value.
+
+Use `Task.objects.create()` or `task.save()` for task creation and type edits. Django's `bulk_create()` and `QuerySet.update()` bypass `save()` and must not be used to change classifications; status-only updates remain supported.
+
+Apply the migration with `python manage.py migrate`. Verify FR-13 and its integrations with `python -m pytest django_modules/test_task_classification.py django_modules/test_task_planning.py django_modules/test_task_distribution.py django_modules/test_scheduler.py` against the configured PostgreSQL test database.
+
+For local PostgreSQL bound to IPv4 on Windows, use `$env:DB_HOST = '127.0.0.1'` if live worker tests time out connecting through `localhost`. The FR-13 full-suite verification used this setting. For Docker, rebuild and restart the web service with `docker compose --env-file .env.docker up -d --build web`; its startup applies migrations automatically.
+
 ## Browser migration
 
 **Import browser data** appears when legacy `multiagent_state_v1` records exist. The import is atomic, preserves an existing master, remaps endpoint references, and enforces the five-specialist limit. Repeating its ID and content reuses the result; changed content returns 409. Old browser data is removed only after success; edits made during import are retained.

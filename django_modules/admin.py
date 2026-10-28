@@ -151,7 +151,7 @@ class TaskAdmin(admin.ModelAdmin):
     list_filter = ('status', 'type', 'project')
     search_fields = ('title', 'instructions')
     inlines = [TaskDependencyInline]
-    readonly_fields = ('plan', 'plan_key', 'required_capabilities', 'expected_output', 'acceptance_criteria')
+    readonly_fields = ('plan', 'plan_key', 'required_capabilities', 'capability_weights', 'expected_output', 'acceptance_criteria')
 
     def has_change_permission(self, request, obj=None):
         """Keep generated plan tasks immutable while allowing legacy task edits."""

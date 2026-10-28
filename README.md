@@ -49,6 +49,8 @@ Agent configuration: Up to five specialist agents can be saved with a model, rol
 
 Task decomposition (FR-11, FR-12): The master turns a project request into 1-20 structured tasks. Each task has a type, instructions, required capabilities, expected output and acceptance criteria. Dependencies between tasks are validated (no missing references, self-dependencies or cycles) and the plan is saved atomically.
 
+Task classification (FR-13): The master selects a validated task type; Django assigns and stores the corresponding `coding`, `reasoning`, `context`, and `speed` weights. Saved plans and worker assignments expose `capabilityWeights`, and the FR-14 scheduler uses these stored weights. Migration 0008 backfills existing tasks without changing their legacy scalar `weights`, statuses, or dependencies. See [classification policy](WORKSPACE_API.md#task-classification-fr-13).
+
 Live agent monitoring (FR-7): The agent panel shows, for every agent, its status (Idle / Busy / Offline), the task it is working on, its queue length (tasks assigned but not started), the last response time and the last heartbeat. The UI polls `GET /api/agents/status/` every 2 seconds, only while the panel is visible. Tests: `django_modules/test_agent_status.py`.
 
 Docker runtime: A container image (Gunicorn, WhiteNoise) and a Docker Compose setup run Django together with PostgreSQL. Optional Ollama CPU/GPU overrides are included. See DOCKER.md.

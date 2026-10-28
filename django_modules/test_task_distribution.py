@@ -56,6 +56,17 @@ class NextTaskTests(TestCase):
         backend.refresh_from_db()
         self.assertEqual(backend.status, 'PENDING')
 
+    def test_assignment_uses_and_returns_the_tasks_stored_weights(self):
+        """A persisted reasoning priority selects B, overriding the BACKEND type fallback."""
+        backend = self.make_task('BACKEND')
+        weights = {'coding': 0, 'reasoning': 1, 'context': 0, 'speed': 0}
+        Task.objects.filter(pk=backend.pk).update(capability_weights=weights)
+        self.assertEqual(self.ask(self.a).status_code, 204)
+        response = self.ask(self.b)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['data']['id'], str(backend.pk))
+        self.assertEqual(response.json()['data']['capabilityWeights'], weights)
+
     def test_agent_takes_the_task_it_is_best_at(self):
         self.make_task('BACKEND')
         frontend = self.make_task('FRONTEND')
