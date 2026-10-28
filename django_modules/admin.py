@@ -216,3 +216,18 @@ class ArtifactReviewAdmin(admin.ModelAdmin):
     list_display = ('id', 'artifact', 'reviewer_agent', 'verdict', 'created_at')
     list_filter = ('verdict', 'reviewer_agent')
     search_fields = ('comments',)
+
+
+from .models import WorkerTaskResult
+
+@admin.register(WorkerTaskResult)
+class WorkerTaskResultAdmin(admin.ModelAdmin):
+    list_display = ('id', 'task', 'agent', 'attempt', 'status', 'model_name', 'started_at', 'completed_at')
+    list_filter = ('status', 'agent')
+    readonly_fields = tuple(field.name for field in WorkerTaskResult._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

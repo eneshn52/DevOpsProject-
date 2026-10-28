@@ -368,3 +368,25 @@ class ArtifactReview(models.Model):
     def __str__(self):
         """Return a readable label for this database record."""
         return f"Review for Artifact #{self.artifact_id}: {self.verdict}"
+
+
+class WorkerTaskResult(models.Model):
+    """FR-16: one leased execution and immutable final result per task attempt."""
+    lease = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='worker_results')
+    agent = models.ForeignKey(Agent, on_delete=models.PROTECT, related_name='worker_results')
+    attempt = models.PositiveIntegerField()
+    status = models.CharField(max_length=20, default='RUNNING')
+    model_name = models.CharField(max_length=100)
+    prompt = models.TextField()
+    options = models.JSONField(default=dict)
+    context_window = models.PositiveIntegerField()
+    result = models.JSONField(default=dict)
+    output = models.TextField(blank=True)
+    error = models.TextField(blank=True)
+    started_at = models.DateTimeField(default=timezone.now)
+    deadline = models.DateTimeField()
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['task', 'attempt'], name='fr16_unique_task_attempt')]

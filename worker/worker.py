@@ -22,7 +22,7 @@ import urllib.request
 from pathlib import Path
 
 DEFAULTS = {'server_url': 'http://127.0.0.1:8000', 'agent_id': None, 'agent_name': '', 'ollama_url': 'http://127.0.0.1:11434',
-            'ollama_key': '', 'model': '', 'interval': 10, 'timeout': 5, 'username': '', 'password': ''}
+            'ollama_key': '', 'model': '', 'interval': 10, 'timeout': 5, 'username': '', 'password': '', 'shared_token': ''}
 logger = logging.getLogger('worker')
 
 
@@ -42,6 +42,8 @@ class Workspace:
     def request(self, method, path, data=None, form=False):
         """Send a request and return the decoded JSON body, raising HTTPError on failures."""
         headers = {'Accept': 'application/json'}
+        if getattr(self, 'worker_token', ''):
+            headers['Authorization'] = 'Bearer ' + self.worker_token
         body = None
         if data is not None:
             body = urllib.parse.urlencode(data).encode() if form else json.dumps(data).encode()
@@ -113,6 +115,7 @@ def load_config(args):
         if unknown:
             raise WorkerError(f'Unknown config keys: {", ".join(sorted(unknown))}')
         config.update(loaded)
+    config['shared_token'] = os.getenv('FR16_WORKER_TOKEN', config['shared_token'])
     config['username'] = os.getenv('WORKER_USERNAME', config['username'])
     config['password'] = os.getenv('WORKER_PASSWORD', config['password'])
     for key in ('server_url', 'agent_id', 'agent_name', 'ollama_url', 'model', 'interval'):
@@ -205,7 +208,8 @@ def main(argv=None):
     parser.add_argument('--ollama-url', dest='ollama_url')
     parser.add_argument('--model', help='Override the model to check (default: the specialist\'s configured model).')
     parser.add_argument('--interval', type=float)
-    parser.add_argument('--once', action='store_true', help='Send a single heartbeat and exit.')
+    parser.add_argument('--execute', action='store_true', help='FR-16: fetch assigned tasks, run the local model and return results.')
+    parser.add_argument('--once', action='store_true', help='Send one heartbeat, or execute at most one task with --execute, and exit.')
     parser.add_argument('--sign-off', action='store_true', help='On Ctrl+C, mark the agent offline immediately instead of letting it time out.')
     parser.add_argument('-v', '--verbose', action='store_true')
     args = parser.parse_args(argv)
@@ -214,7 +218,15 @@ def main(argv=None):
     if hasattr(signal, 'SIGBREAK'):
         signal.signal(signal.SIGBREAK, stop)  # Ctrl+Break on Windows
     try:
-        return run(load_config(args), once=args.once, sign_off=args.sign_off)
+        config = load_config(args)
+        if args.execute:
+            if __package__:
+                from .task_runner import run as execute_tasks
+            else:
+                from task_runner import run as execute_tasks
+            path = Path(args.config or 'worker/config.json').resolve().with_suffix('.fr16-outbox.json')
+            return execute_tasks(config, path, once=args.once, sign_off=args.sign_off)
+        return run(config, once=args.once, sign_off=args.sign_off)
     except WorkerError as error:
         logger.error('%s', error)
         return 2
