@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("django_modules", "0007_agent_current_task"),
+        ("django_modules", "0008_task_capability_weights"),
     ]
 
     operations = [
