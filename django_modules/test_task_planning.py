@@ -12,13 +12,14 @@ from urllib.error import URLError
 from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.db import close_old_connections, connection, connections
+from django.db import DatabaseError, close_old_connections, connection, connections
 from django.test import Client, RequestFactory, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
 from .admin import TaskDependencyForm
 from .models import AIModel, APIConnection, Agent, Project, Task, TaskDependency, TaskPlan
 from .task_planning import PLAN_SCHEMA
+from .task_distribution import ready_tasks
 from .task_weights import TASK_WEIGHTS
 
 
@@ -73,6 +74,12 @@ class TaskPlanningTests(TestCase):
         self.assertEqual([task['key'] for task in data['tasks']], ['contract', 'frontend', 'backend', 'test'])
         self.assertTrue(all(task['status'] == 'PENDING' for task in data['tasks']))
         self.assertEqual(TaskDependency.objects.count(), 4)
+        self.assertSetEqual(set(TaskDependency.objects.values_list('task__plan_key', 'depends_on__plan_key')),
+                            {('frontend', 'contract'), ('backend', 'contract'),
+                             ('test', 'backend'), ('test', 'frontend')})
+        self.assertEqual({task['key']: task['dependsOn'] for task in data['tasks']},
+                         {'contract': [], 'frontend': ['contract'], 'backend': ['contract'],
+                          'test': ['backend', 'frontend']})
         self.assertEqual(Task.objects.get(plan_key='test').acceptance_criteria, ['The stated contract is satisfied.'])
         self.assertEqual(Task.objects.get(plan_key='test').expected_output, 'Reviewable test artifact')
         self.assertTrue(Task.objects.filter(pk=legacy.pk, plan__isnull=True).exists())
@@ -80,6 +87,61 @@ class TaskPlanningTests(TestCase):
         self.assertEqual(saved, data)
         self.assertNotIn('planner-secret', json.dumps(saved))
         self.assertNotIn('planner-secret', self.client.get(self.url).content.decode())
+
+    def test_generated_dependencies_release_parallel_branches_and_wait_for_the_join(self):
+        """A saved master plan releases independent branches and blocks its join until both finish."""
+        self.assertEqual(self.generate().status_code, 201)
+        tasks = {task.plan_key: task for task in Task.objects.all()}
+        self.assertEqual([task.plan_key for task in ready_tasks()], ['contract'])
+        tasks['contract'].status = 'COMPLETED'
+        tasks['contract'].save(update_fields=['status'])
+        self.assertSetEqual({task.plan_key for task in ready_tasks()}, {'frontend', 'backend'})
+        tasks['backend'].status = 'COMPLETED'
+        tasks['backend'].save(update_fields=['status'])
+        self.assertEqual([task.plan_key for task in ready_tasks()], ['frontend'])
+        for status in ['ASSIGNED', 'IN_PROGRESS', 'FAILED']:
+            with self.subTest(prerequisite_status=status):
+                tasks['frontend'].status = status
+                tasks['frontend'].save(update_fields=['status'])
+                self.assertEqual(ready_tasks(), [])
+                tasks['test'].refresh_from_db()
+                self.assertEqual((tasks['test'].status, tasks['test'].assigned_agent_id), ('PENDING', None))
+        tasks['frontend'].status = 'COMPLETED'
+        tasks['frontend'].save(update_fields=['status'])
+        self.assertEqual([task.plan_key for task in ready_tasks()], ['test'])
+        saved = self.client.get(f'{self.url}{tasks["test"].plan_id}/').json()['data']
+        self.assertEqual(next(row for row in saved['tasks'] if row['key'] == 'test')['dependsOn'],
+                         ['backend', 'frontend'])
+
+    def test_dependency_write_failure_rolls_back_the_whole_graph(self):
+        """A failed edge write leaves existing graphs intact and no partially saved new tasks."""
+        self.assertEqual(self.generate().status_code, 201)
+        original_task_ids = set(Task.objects.values_list('pk', flat=True))
+        original_edge_ids = set(TaskDependency.objects.values_list('pk', flat=True))
+        original_write = TaskDependency.objects.bulk_create
+
+        def fail_after_writing_edges(*args, **kwargs):
+            """Simulate a database failure after edge insertion inside the plan transaction."""
+            original_write(*args, **kwargs)
+            raise DatabaseError('Dependency storage unavailable')
+
+        with patch('django_modules.task_planning.TaskDependency.objects.bulk_create', side_effect=fail_after_writing_edges):
+            response = self.generate(body={**self.body, 'id': str(uuid.uuid4())})
+        self.assertEqual(response.status_code, 503, response.content)
+        self.assertEqual(response.json()['code'], 'DATABASE_UNAVAILABLE')
+        self.assertSetEqual(set(Task.objects.values_list('pk', flat=True)), original_task_ids)
+        self.assertSetEqual(set(TaskDependency.objects.values_list('pk', flat=True)), original_edge_ids)
+        self.assertEqual(TaskPlan.objects.filter(status='READY').count(), 1)
+
+    def test_same_task_keys_in_separate_plans_keep_dependencies_local(self):
+        """Task keys resolve within their own plan, including when another plan reuses every key."""
+        first = self.generate().json()['data']
+        second = self.generate(body={**self.body, 'id': str(uuid.uuid4())}).json()['data']
+        self.assertNotEqual(first['id'], second['id'])
+        self.assertEqual(TaskDependency.objects.count(), 8)
+        for edge in TaskDependency.objects.select_related('task', 'depends_on'):
+            self.assertEqual(edge.task.plan_id, edge.depends_on.plan_id)
+            self.assertEqual(edge.task.project_id, edge.depends_on.project_id)
 
     def test_classifies_all_task_types_and_exposes_persisted_weights(self):
         """The master supplies types; Django assigns weights to every saved task and response."""
@@ -135,6 +197,7 @@ class TaskPlanningTests(TestCase):
         self.assertEqual(replay.status_code, 200)
         self.assertEqual(first.json()['data'], replay.json()['data'])
         self.assertEqual(Task.objects.count(), 4)
+        self.assertEqual(TaskDependency.objects.count(), 4)
 
     def test_reused_identifier_rejects_changed_request_or_project(self):
         """Prevent one idempotency identifier from representing different work."""

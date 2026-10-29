@@ -79,6 +79,27 @@ GET history returns `items` (20 per page, newest first) and `nextOffset`; pass `
 
 The planning dialog reloads saved history, displays generation failures, and polls in-flight attempts after a browser reload. Closing the dialog stops polling, not server generation. This stage is synchronous generation with persistent attempt recovery; it does not provide a background scheduler, automatic agent routing, durable execution, repository changes, or test execution. A master process failure requires a new generation after the old attempt expires. Larger plans can be handled as separate requests; automatic recursive decomposition is not implemented.
 
+## Task dependencies (FR-12)
+
+The master records a task's direct prerequisites in `dependsOn`. A task with `dependsOn: []` has no prerequisites; every listed prerequisite must complete before a dependent task can be assigned. Independent branches can run in parallel. A task that combines their outputs lists all required branches. For example, these dependency fields describe a contract followed by parallel backend/frontend work and a final test:
+
+```json
+[
+  {"key": "contract", "dependsOn": []},
+  {"key": "backend", "dependsOn": ["contract"]},
+  {"key": "frontend", "dependsOn": ["contract"]},
+  {"key": "test", "dependsOn": ["backend", "frontend"]}
+]
+```
+
+This is a dependency-only excerpt; generated tasks still require the other fields described above. Keys resolve within the same plan, even if another plan uses identical keys. The server rejects duplicate edges, self-links, missing references, and cycles, orders valid tasks topologically, and saves all tasks and `TaskDependency` rows in one transaction. Each row means `task` waits for `depends_on`; a database error rolls back the entire new graph while preserving existing plans.
+
+POST generation, repeated requests, and GET plan detail return the saved `dependsOn` keys. They survive reloads without asking the model again. The task-plan dialog displays the prerequisites under **Dependencies**. Generated plan dependencies are read-only in admin.
+
+`task_distribution.ready_tasks()` admits only `PENDING` tasks in active projects and saved plans whose prerequisites are all `COMPLETED`. `PENDING`, `ASSIGNED`, `IN_PROGRESS`, or `FAILED` prerequisites block dependent work; completion of every prerequisite releases it for FR-14 selection. This gate does not execute tasks, transfer artifacts, or retry failed prerequisites automatically.
+
+Tests cover exact edge direction, persistence/replay, plan isolation, branching/joining readiness, failed prerequisites, invalid graphs, and rollback after an edge-write failure. Run `python -m pytest django_modules/test_task_planning.py django_modules/test_task_distribution.py` against the configured PostgreSQL test database.
+
 ## Task classification (FR-13)
 
 The master classifies each generated task using the validated `type` enum. Django assigns the required capability weights from `django_modules/task_weights.py` when creating/saving the task or saving a type change. Task types are independent of configured agent roles. The master must not supply weights: extra fields in its plan JSON are rejected.
