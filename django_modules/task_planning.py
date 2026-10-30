@@ -121,7 +121,7 @@ def plan_json(plan, include_tasks=False):
              'instructions': task.instructions, 'requiredCapabilities': task.required_capabilities,
              'capabilityWeights': task.capability_weights,
              'expectedOutput': task.expected_output, 'acceptanceCriteria': task.acceptance_criteria,
-             'status': task.status, 'dependsOn': [edge.depends_on.plan_key for edge in task.dependencies.all()]}
+             'status': task.status, 'dependsOn': [edge.depends_on.plan_key for edge in sorted(task.dependencies.all(), key=lambda edge: edge.pk)]}
             for task in tasks
         ]
         result['taskCount'] = len(tasks)
