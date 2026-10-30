@@ -34,6 +34,7 @@ PLAN_SCHEMA = {
                 'acceptanceCriteria': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True,
                                        'items': {'type': 'string', 'minLength': 1, 'maxLength': 500}},
                 'dependsOn': {'type': 'array', 'maxItems': MAX_TASKS - 1, 'uniqueItems': True,
+                              'description': 'Keys of direct prerequisite tasks that must all complete before this task starts. Use [] for independent tasks.',
                               'items': {'type': 'string', 'pattern': KEY_PATTERN}},
             },
         }},
@@ -162,6 +163,9 @@ def generate_plan(plan, endpoint_config):
             'You are a software project planner. Return only JSON matching the supplied schema. '
             f'Create 1-{MAX_TASKS} concrete tasks with verifiable acceptance criteria. '
             'Use unique short task keys and refer to these keys in dependsOn. Dependencies must form a DAG. '
+            'For each task, record only its direct prerequisites in dependsOn: every listed task must complete '
+            'before this task starts. Use [] when there are no prerequisites. Keep independent tasks parallel; '
+            'a task combining their outputs must depend on every required branch. '
             'Define shared contracts before dependent frontend/backend work. Include review or testing when relevant. '
             'Classify each task by its work: REQUIREMENTS for requirements/contracts, DATABASE for schemas/SQL, '
             'BACKEND for server logic/APIs, FRONTEND for UI, TESTING for tests, REVIEW for code review, '

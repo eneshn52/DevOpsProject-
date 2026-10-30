@@ -36,7 +36,7 @@ User request
 | Duplicate-request handling | Repeating the same chat or planning request ID and content replays its result without another generation. Conflicting reuse is rejected. |
 | Task-plan generation | The master receives a project request and bounded project context, and returns structured JSON containing 1-20 tasks. The UI shows saved history, details, generation state, and failures. |
 | Task requirements | Each planned task stores its specialization, instructions, required capabilities, expected output, acceptance criteria, and prerequisite task references. |
-| Dependency validation | Reject invalid fields, missing references, duplicate task keys/dependencies, self-dependencies, and cycles. Save a valid plan and its tasks atomically. Tasks initially have `PENDING` status and no assigned agent. |
+| Task dependencies (FR-12) | The master records direct prerequisites in `dependsOn`. Django rejects invalid graphs and saves tasks and dependency edges atomically. Saved dependencies survive reload/replay. Assignment admits a dependent task only after every prerequisite is `COMPLETED`, allowing independent branches in parallel. |
 | Access and validation | Shared workspace APIs enforce input validation and CSRF for writes. Local loopback access is permitted by configuration; remote browser access requires a Django staff session. This is separate from future worker authentication. |
 | Browser-data migration | Explicit import of older browser-local chats and settings, with duplicate-import protection. Old browser data remains until import succeeds. Browser storage now holds appearance/selection preferences and the import retry ID. |
 | Administration and documentation | Django admin, API documentation, design specification, and brief explanations on Python functions and JavaScript functions/callbacks. Generated plan tasks and dependencies are protected from manual admin edits. |
@@ -51,7 +51,7 @@ A database table or status field is a starting point for these features, not a c
 | Agent status and heartbeat fields | Actual health probes, worker heartbeats, freshness rules, and availability updates. |
 | Capability metrics and agent scores | Capability profiles, benchmark collection, and selection based on measured suitability. |
 | Task assignment, status, and attempt-count fields | Assignment service, execution attempts, capacity reservations, scheduling, and recovery. |
-| Tasks and dependency records | Checking which tasks are runnable and releasing them as prerequisites finish. Current validation only establishes a valid saved graph. |
+| Tasks and dependency records | Recording/validating dependencies and filtering runnable tasks are implemented. Transferring prerequisite artifacts to workers and automatically retrying failed prerequisites remain future work. |
 | Code artifacts and artifact reviews | Artifact upload/retrieval, repository changes, automated checks, reviewer execution, and integration. |
 | Execution metrics | Automatic recording of durations, token usage, failures, and retries during worker execution. |
 | Git branch metadata | Creating branches/worktrees, synchronizing repository versions, collecting patches, and merging accepted changes. |
