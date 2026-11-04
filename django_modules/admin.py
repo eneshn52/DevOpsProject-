@@ -16,6 +16,8 @@ from .models import (
     APIConnection,
     Conversation,
     ChatRequest,
+    BenchmarkRun,
+    BenchmarkCase,
 )
 
 
@@ -86,6 +88,22 @@ class AgentAdmin(admin.ModelAdmin):
     list_filter = ('status', 'ai_model')
     search_fields = ('name', 'machine')
     inlines = [AgentCapabilityScoreInline]
+    actions = ['start_fr9_benchmark']
+
+    @admin.action(description='Start FR-9 benchmark for selected worker')
+    def start_fr9_benchmark(self, request, queryset):
+        from .benchmarking import start_benchmark
+        started, errors = [], []
+        for agent in queryset:
+            try:
+                run = start_benchmark(agent)
+                started.append(f'#{run.pk} ({agent.name})')
+            except ValueError as exc:
+                errors.append(f'{agent.name}: {exc}')
+        if started:
+            self.message_user(request, 'Benchmark queued: ' + ', '.join(started) + '. Results arrive via the running worker.')
+        if errors:
+            self.message_user(request, 'Not started — ' + '; '.join(errors), level='error')
 
 
 @admin.register(AgentCapabilityScore)
@@ -225,6 +243,28 @@ class WorkerTaskResultAdmin(admin.ModelAdmin):
     list_display = ('id', 'task', 'agent', 'attempt', 'status', 'model_name', 'started_at', 'completed_at')
     list_filter = ('status', 'agent')
     readonly_fields = tuple(field.name for field in WorkerTaskResult._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class BenchmarkCaseInline(admin.TabularInline):
+    model = BenchmarkCase
+    extra = 0
+    can_delete = False
+    readonly_fields = ('task', 'metric', 'case_id', 'outcome', 'completed_at')
+
+
+@admin.register(BenchmarkRun)
+class BenchmarkRunAdmin(admin.ModelAdmin):
+    list_display = ('id', 'agent', 'model_name', 'suite_version', 'status', 'created_at', 'completed_at')
+    list_filter = ('status', 'suite_version')
+    search_fields = ('agent__name', 'model_name')
+    readonly_fields = tuple(field.name for field in BenchmarkRun._meta.fields)
+    inlines = [BenchmarkCaseInline]
 
     def has_add_permission(self, request):
         return False

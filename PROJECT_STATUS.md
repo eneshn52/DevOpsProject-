@@ -1,8 +1,8 @@
 # Project status and implementation roadmap
 
-Updated: 18 October 2026.
+Updated: 4 November 2026.
 
-The project currently provides a local coding workspace with PostgreSQL persistence, chat with a configured master model, and validated task-plan generation. The master can produce and save a dependency plan. Automatic assignment to remote agents and task execution are future work.
+The project provides a local coding workspace with PostgreSQL persistence, chat with a configured master model, validated task-plan generation, an authenticated FR-16 worker execution protocol, and an FR-9 benchmark workflow that updates capability scores after a complete successful run.
 
 ## Intended system
 
@@ -14,9 +14,9 @@ The intended workflow is:
 User request
   -> Master creates a plan                    IMPLEMENTED
   -> Django validates and saves tasks         IMPLEMENTED
-  -> Router selects suitable specialists      FUTURE
-  -> Scheduler releases runnable tasks        FUTURE
-  -> Remote agents produce artifacts          FUTURE
+  -> Router selects suitable specialists      PARTIAL (FR-14 task assignment)
+  -> Scheduler releases runnable tasks        PARTIAL (workers claim runnable assigned tasks)
+  -> Remote agents produce artifacts          PARTIAL (FR-16 task output returned)
   -> Tests, review, and integration            FUTURE
   -> Completed project and final report       FUTURE
 ```
@@ -41,6 +41,8 @@ User request
 | Browser-data migration | Explicit import of older browser-local chats and settings, with duplicate-import protection. Old browser data remains until import succeeds. Browser storage now holds appearance/selection preferences and the import retry ID. |
 | Administration and documentation | Django admin, API documentation, design specification, and brief explanations on Python functions and JavaScript functions/callbacks. Generated plan tasks and dependencies are protected from manual admin edits. |
 | Docker runtime | Application image with Gunicorn, WhiteNoise/static assets, non-root execution, startup migrations, and readiness checking. Compose runs Django/PostgreSQL with the existing data volume. Windows startup/configuration script and optional Ollama CPU/NVIDIA override files are provided; the default host-Ollama setup was executed and verified. See `DOCKER.md`. |
+| FR-16 worker execution | A token-authenticated worker sends heartbeats, claims its assigned task over HTTP, runs the agent's configured Ollama model locally, and returns a leased result with model digest, tokens, and timing. Results are stored with task attempts; offline delivery is retried from the worker outbox. |
+| FR-9 benchmark and FR-8 scores | Django admin can queue a 14-case benchmark for an online, idle specialist. Coding, reasoning, context retrieval, and generation speed are measured through the FR-16 worker channel. Scores replace the profile together only after all cases return valid results; execution/measurement failures preserve existing scores. |
 
 ## Foundations that exist but need working services
 
@@ -48,9 +50,9 @@ A database table or status field is a starting point for these features, not a c
 
 | Existing foundation | What still needs to be connected |
 | --- | --- |
-| Agent status and heartbeat fields | Actual health probes, worker heartbeats, freshness rules, and availability updates. |
-| Capability metrics and agent scores | Capability profiles, benchmark collection, and selection based on measured suitability. |
-| Task assignment, status, and attempt-count fields | Assignment service, execution attempts, capacity reservations, scheduling, and recovery. |
+| Agent status and heartbeat fields | Browser-side health probes and richer availability reporting. Worker heartbeats and stale-agent detection are implemented. |
+| Capability metrics and agent scores | FR-8 profile storage and FR-9 benchmark updates are implemented. Routing policy can be refined with real usage. |
+| Task assignment, status, and attempt-count fields | FR-16 leases, attempts, result delivery, deadlines, and outbox recovery are implemented. Background scheduling and capacity reservations remain future work. |
 | Tasks and dependency records | Recording/validating dependencies and filtering runnable tasks are implemented. Transferring prerequisite artifacts to workers and automatically retrying failed prerequisites remain future work. |
 | Code artifacts and artifact reviews | Artifact upload/retrieval, repository changes, automated checks, reviewer execution, and integration. |
 | Execution metrics | Automatic recording of durations, token usage, failures, and retries during worker execution. |
@@ -76,11 +78,11 @@ Run a scheduler separately from HTTP requests. Find tasks whose prerequisites ha
 
 Done when: dependency order is respected, independent tasks run in parallel, and competing schedulers cannot dispatch the same task or over-reserve a worker.
 
-### 4. Add the worker execution and recovery protocol
+### 4. Extend worker execution and recovery
 
-Define task submission, execution lookup, heartbeat, result delivery, and cancellation APIs. Add per-attempt identifiers, deadlines, reservations with expiry, bounded retries, and explicit blocked/failed/cancelled behavior. Workers must recognize repeated submissions of the same attempt. Reject stale results and account for generation that may still be running after a network timeout.
+Extend the existing FR-16 protocol with explicit cancellation and bounded retry policy. It already provides task start/result APIs, per-attempt leases, deadlines, idempotent result delivery, and worker outbox recovery. Reject stale results and account for generation that may still be running after a network timeout.
 
-Done when: a worker disconnect or scheduler restart does not lose task history, accept obsolete output, or cause uncontrolled duplicate work.
+Done when: cancellation and retry policy are explicit and a worker disconnect or scheduler restart does not lose task history, accept obsolete output, or cause uncontrolled duplicate work.
 
 ### 5. Give agents a controlled project workspace
 
