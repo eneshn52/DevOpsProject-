@@ -390,3 +390,37 @@ class WorkerTaskResult(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=['task', 'attempt'], name='fr16_unique_task_attempt')]
+
+
+class BenchmarkRun(models.Model):
+    """FR-9 benchmark run requested for one specialist; scores commit only on full success."""
+    STATUS_CHOICES = [('RUNNING', 'Running'), ('COMPLETED', 'Completed'), ('FAILED', 'Failed')]
+    agent = models.ForeignKey(Agent, on_delete=models.PROTECT, related_name='benchmark_runs')
+    model_name = models.CharField(max_length=100)
+    suite_version = models.CharField(max_length=40, default='fr9-v1')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='RUNNING')
+    scores = models.JSONField(default=dict, blank=True)
+    details = models.JSONField(default=dict, blank=True)
+    error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f'Benchmark #{self.pk} — {self.agent.name} ({self.status})'
+
+
+class BenchmarkCase(models.Model):
+    """One benchmark prompt mapped to an ordinary FR-16 task/result."""
+    run = models.ForeignKey(BenchmarkRun, on_delete=models.CASCADE, related_name='cases')
+    task = models.OneToOneField(Task, on_delete=models.CASCADE, related_name='benchmark_case')
+    metric = models.CharField(max_length=20)
+    case_id = models.CharField(max_length=40)
+    expected = models.JSONField(default=dict)
+    outcome = models.JSONField(default=dict, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['pk']
+
+    def __str__(self):
+        return f'{self.run} — {self.metric}/{self.case_id}'

@@ -100,6 +100,8 @@ def expire_executions(agent):
         Task.objects.filter(pk=execution.task_id, assigned_agent=agent, attempts=execution.attempt, status='IN_PROGRESS').update(status='FAILED')
         Metric.objects.create(task=execution.task, agent=agent, model=execution.model_name, success=False,
                               duration_s=(execution.completed_at - execution.started_at).total_seconds())
+        from .benchmarking import record_case_result
+        record_case_result(execution.task, execution)
         if agent.current_task_id == execution.task_id:
             agent.current_task, agent.status = None, 'IDLE'
             agent.save(update_fields=['current_task', 'status'])
@@ -179,6 +181,9 @@ def validate(data):
         value = data.get(name)
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 86400:
             raise APIError(f'Invalid {name}.')
+    generation_duration = data.get('generation_duration_s', 0)
+    if type(generation_duration) not in (int, float) or not math.isfinite(generation_duration) or not 0 <= generation_duration <= 86400:
+        raise APIError('Invalid generation_duration_s.')
     for name in ('prompt_tokens', 'output_tokens'):
         if type(data.get(name)) is not int or not 0 <= data[name] <= 10000000:
             raise APIError(f'Invalid {name}.')
@@ -190,7 +195,8 @@ def validate(data):
 @for_worker(strict=True)
 @endpoint('POST')
 def result(request, agent_id, task_id):
-    fields = {'attempt', 'lease', 'status', 'output', 'error', 'duration_s', 'prompt_tokens', 'output_tokens', 'model_metadata'}
+    fields = {'attempt', 'lease', 'status', 'output', 'error', 'duration_s', 'generation_duration_s',
+              'prompt_tokens', 'output_tokens', 'model_metadata'}
     data = payload(request, fields, max_bytes=700000)
     validate(data)
     with transaction.atomic():
@@ -219,6 +225,8 @@ def result(request, agent_id, task_id):
         Metric.objects.create(task=task, agent=agent, model=execution.model_name,
             success=data['status'] == 'COMPLETED', duration_s=data['duration_s'],
             prompt_tokens=data['prompt_tokens'], output_tokens=data['output_tokens'], retries=max(0, task.attempts - 1))
+        from .benchmarking import record_case_result
+        record_case_result(task, execution)
         agent.status, agent.current_task, agent.last_heartbeat = 'IDLE', None, timezone.now()
         agent.save(update_fields=['status', 'current_task', 'last_heartbeat'])
         return {'status': execution.status, 'id': execution.pk}

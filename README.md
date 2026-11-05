@@ -5,7 +5,13 @@
 
 [Docker setup and startup instructions](DOCKER.md)
 
-Saved task planning is available from **Task plans** in the sidebar. Configure a master model, select a project, and enter a request to generate tasks with validated dependencies, expected outputs, and acceptance criteria. Plans are stored in PostgreSQL; automatic routing and execution are subsequent features.
+Saved task planning is available from **Task plans** in the sidebar. Configure a master model, select a project, and enter a request to generate tasks with validated dependencies, expected outputs, and acceptance criteria. FR-16 workers can claim assigned tasks, run their configured local Ollama model, and return results over HTTP. FR-9 benchmarks can be started from Django admin and update capability scores after a complete successful run.
+
+## FR-9 benchmark
+
+Start the Django app, configure a specialist agent with a model and context window, and start that agent's FR-16 worker so its heartbeat is recent. In Django admin, open **Agents**, select one worker, choose **Start FR-9 benchmark for selected worker**, and click **Run**. The worker executes 14 coding, reasoning, context-retrieval, and speed cases through the normal task API. Follow progress under **Benchmark runs** and **Worker task results**. The four capability scores update together only after every case returns a valid result; wrong answers reduce the relevant score, while a failed execution or invalid speed sample preserves the previous scores. Speed is a project-specific score based on median Ollama generation tokens/second, with 20 tokens/second mapped to 100 points.
+
+FR-16 is the worker protocol and task execution path; FR-9 uses that path to measure and score one selected worker.
 
 CM6453: Distributed AI Software Development Platform
 
