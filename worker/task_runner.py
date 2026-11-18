@@ -47,6 +47,8 @@ def generate(job, config):
             raise ValueError('Cannot record the installed model version digest.')
         result['model_metadata'] = {'name': name, 'digest': info['digest'], 'details': info.get('details', {}), 'modified_at': info.get('modified_at', '')}
         body = dict(model=job['model'], prompt=job['prompt'], options=job['options'], stream=False)
+        if job.get('format'):  # FR-18: master asks for the JSON result shape
+            body['format'] = job['format']
         remaining = job['timeout_s'] - (time.monotonic() - started)
         if remaining <= 0:
             raise TimeoutError('Task timeout during model metadata lookup.')

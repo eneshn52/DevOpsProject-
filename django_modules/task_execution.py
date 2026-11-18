@@ -9,6 +9,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from .models import Agent, Metric, Task, WorkerTaskResult
+from .task_results import check_answer, job_format, needs_files, result_instructions, save_artifact
 from django_modules.workspace_api import APIError, payload
 
 # FR-16-only access boundary. Existing view implementations remain unchanged.
@@ -108,10 +109,14 @@ def expire_executions(agent):
 
 
 def job_json(execution):
-    return sign_job({'task_id': str(execution.task_id), 'attempt': execution.attempt, 'lease': str(execution.lease),
+    data = {'task_id': str(execution.task_id), 'attempt': execution.attempt, 'lease': str(execution.lease),
             'model': execution.model_name, 'prompt': execution.prompt, 'options': execution.options,
             'context_window': execution.context_window,
-            'timeout_s': max(1, int((execution.deadline - timezone.now()).total_seconds()))}, execution.agent_id)
+            'timeout_s': max(1, int((execution.deadline - timezone.now()).total_seconds()))}
+    answer_format = job_format(execution.task)
+    if answer_format:  # FR-18: project tasks answer in the agreed JSON shape
+        data['format'] = answer_format
+    return sign_job(data, execution.agent_id)
 
 
 @csrf_exempt
@@ -143,6 +148,8 @@ def start(request, agent_id, task_id):
         prompt = f'Task: {task.title}\nInstructions:\n{task.instructions}\nExpected output:\n{task.expected_output}'
         if task.acceptance_criteria:
             prompt += '\nAcceptance criteria:\n' + '\n'.join(map(str, task.acceptance_criteria))
+        if needs_files(task):
+            prompt += result_instructions(task)
         # Conservative byte upper bound rather than assuming one character = one token.
         if context < 512 or len(prompt.encode()) + 256 > int(context * .8):
             raise APIError('Task exceeds the configured context budget.', 409, 'CONTEXT_LIMIT')
@@ -219,17 +226,24 @@ def result(request, agent_id, task_id):
             return {'status': 'FAILED', 'error': execution.error, 'id': execution.pk}
         execution.result, execution.output, execution.error = data, data['output'], data['error']
         execution.status, execution.completed_at = data['status'], timezone.now()
+        parsed = None
+        if execution.status == 'COMPLETED' and needs_files(task):
+            parsed, problem = check_answer(task, data['output'])
+            if problem:  # FR-18: an unusable answer is a failed attempt, with the reason kept
+                execution.status, execution.error = 'FAILED', problem
         execution.save(update_fields=['result', 'output', 'error', 'status', 'completed_at'])
         task.status = execution.status
         task.save(update_fields=['status'])
+        if parsed:
+            save_artifact(task, agent, execution.attempt, parsed)
         Metric.objects.create(task=task, agent=agent, model=execution.model_name,
-            success=data['status'] == 'COMPLETED', duration_s=data['duration_s'],
+            success=execution.status == 'COMPLETED', duration_s=data['duration_s'],
             prompt_tokens=data['prompt_tokens'], output_tokens=data['output_tokens'], retries=max(0, task.attempts - 1))
         from .benchmarking import record_case_result
         record_case_result(task, execution)
         agent.status, agent.current_task, agent.last_heartbeat = 'IDLE', None, timezone.now()
         agent.save(update_fields=['status', 'current_task', 'last_heartbeat'])
-        return {'status': execution.status, 'id': execution.pk}
+        return {'status': execution.status, 'id': execution.pk, **({'error': execution.error} if execution.error else {})}
 
 
 @for_worker(strict=True)
