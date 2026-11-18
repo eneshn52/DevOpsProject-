@@ -111,3 +111,11 @@ def test_path_leaving_the_repo_is_refused_and_nothing_is_written(tmp_path):
         commit_files(repo, 'project/1-a', [f('backend/ok.py'), f('../escaped.py')], 'a')
     assert not (tmp_path / 'escaped.py').exists()
     assert not (repo / 'backend' / 'ok.py').exists()
+
+
+def test_leftovers_from_a_failed_commit_do_not_leak_into_another_project(tmp_path):
+    commit_files(tmp_path, 'project/1-a', [f('backend/a.py')], 'a')
+    (tmp_path / 'backend' / 'stray.py').write_text('left over')  # as if the commit crashed after "git add"
+    git(tmp_path, 'add', 'backend/stray.py')
+    commit_files(tmp_path, 'project/2-b', [f('backend/b.py')], 'b')
+    assert files_on(tmp_path, 'project/2-b') == ['backend/b.py']

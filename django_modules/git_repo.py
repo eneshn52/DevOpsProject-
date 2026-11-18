@@ -39,7 +39,8 @@ def branch_name(project_id, project_name):
     3. strip '-' from both ends, cut to 40 characters, strip '-' again
     4. if nothing is left, return 'project/<id>'
     """
-    raise NotImplementedError
+    slug = re.sub(r'[^a-z0-9]+', '-', project_name.lower()).strip('-')[:40].rstrip('-')
+    return f'project/{project_id}-{slug}' if slug else f'project/{project_id}'
 
 
 def ensure_repo(repo_dir):
@@ -52,7 +53,15 @@ def ensure_repo(repo_dir):
     5. git commit --allow-empty -m "Start generated projects"
        (an empty first commit on main, so every project branch has a starting point)
     """
-    raise NotImplementedError
+    repo_dir = Path(repo_dir)
+    if (repo_dir / '.git').exists():
+        return
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    git(repo_dir, 'init', '-b', BASE_BRANCH)
+    git(repo_dir, 'config', 'user.name', AUTHOR_NAME)
+    git(repo_dir, 'config', 'user.email', AUTHOR_EMAIL)
+    git(repo_dir, 'config', 'core.autocrlf', 'false')
+    git(repo_dir, 'commit', '--allow-empty', '-m', 'Start generated projects')
 
 
 def target_path(repo_dir, relative):
@@ -61,7 +70,14 @@ def target_path(repo_dir, relative):
     Hint: resolve() both the repo folder and (repo folder / relative), then check
     that the repo folder is one of target.parents.
     """
-    raise NotImplementedError
+    root = Path(repo_dir).resolve()
+    relative = Path(relative)
+    target = (root / relative).resolve()
+    if relative.anchor or root not in target.parents:
+        raise ValueError(f'Path must be inside the repository: {relative}')
+    if any(part.lower() == '.git' for part in target.relative_to(root).parts):
+        raise ValueError(f'Path points into Git metadata: {relative}')
+    return target
 
 
 def commit_files(repo_dir, branch, files, message):
@@ -82,4 +98,35 @@ def commit_files(repo_dir, branch, files, message):
          (use subprocess.run directly: git() raises on exit code 1)
       7. git commit -m message, then return `git rev-parse HEAD`
     """
-    raise NotImplementedError
+    with _lock:
+        ensure_repo(repo_dir)
+        git(repo_dir, 'reset', '--hard', '-q')  # drop anything a failed earlier call left behind
+        git(repo_dir, 'clean', '-fdq')
+        files = list(files)
+        for item in files:
+            target_path(repo_dir, item['path'])
+        if git(repo_dir, 'branch', '--list', branch):
+            git(repo_dir, 'checkout', branch)
+        else:
+            git(repo_dir, 'checkout', '-b', branch, BASE_BRANCH)
+
+        # Resolve against the checked-out branch before writing any files.
+        targets = [(target_path(repo_dir, item['path']), item['content']) for item in files]
+        if not targets:
+            return None
+        for target, content in targets:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open('w', encoding='utf-8', newline='') as stream:
+                stream.write(content)
+
+        root = Path(repo_dir).resolve()
+        paths = [str(target.relative_to(root)) for target, _ in targets]
+        git(repo_dir, '--literal-pathspecs', 'add', '--', *paths)
+        diff = subprocess.run(['git', 'diff', '--cached', '--quiet'], cwd=repo_dir,
+                              capture_output=True, text=True)
+        if diff.returncode == 0:
+            return None
+        if diff.returncode != 1:
+            raise GitError(f'git diff --cached --quiet failed: {diff.stderr.strip()}')
+        git(repo_dir, 'commit', '-m', message)
+        return git(repo_dir, 'rev-parse', 'HEAD')
