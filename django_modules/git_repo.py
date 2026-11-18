@@ -100,6 +100,8 @@ def commit_files(repo_dir, branch, files, message):
     """
     with _lock:
         ensure_repo(repo_dir)
+        git(repo_dir, 'reset', '--hard', '-q')  # drop anything a failed earlier call left behind
+        git(repo_dir, 'clean', '-fdq')
         files = list(files)
         for item in files:
             target_path(repo_dir, item['path'])
