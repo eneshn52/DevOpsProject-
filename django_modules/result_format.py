@@ -55,7 +55,7 @@ def allowed_folders(task_type):
     task_weights.capability_weights_for() falls back for unknown types.
     """
     # Hint: one line with dict.get(key, default).
-    raise NotImplementedError
+    return ALLOWED_FOLDERS.get(task_type, ALLOWED_FOLDERS['GENERAL'])
 
 
 def clean_path(path, task_type):
@@ -70,7 +70,20 @@ def clean_path(path, task_type):
       5. does not start with one of allowed_folders(task_type)
          (str.startswith accepts a tuple)
     """
-    raise NotImplementedError
+    path = path.strip()
+    if not path:
+        raise ResultError('A file has an empty path.')
+    if '\\' in path:
+        raise ResultError(f'Path {path!r} must use forward slashes.')
+    if path.startswith('/') or ':' in path:
+        raise ResultError(f'Path {path!r} must be relative.')
+    for part in path.split('/'):
+        if part in ('', '.', '..', '.git'):
+            raise ResultError(f'Path {path!r} contains an invalid part {part!r}.')
+    folders = allowed_folders(task_type)
+    if not path.startswith(folders):
+        raise ResultError(f'Path {path!r} is outside the folders allowed for {task_type}: {", ".join(folders)}')
+    return path
 
 
 def parse_result(text, task_type):
@@ -92,4 +105,43 @@ def parse_result(text, task_type):
 
     One bad file rejects the whole answer: we never commit half a result.
     """
-    raise NotImplementedError
+        # 1. Read the JSON
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        raise ResultError('The answer is not valid JSON.')
+
+    # 2. Must be a dict
+    if not isinstance(data, dict):
+        raise ResultError('The answer must be a JSON object.')
+
+    # 3. "files" must be a non-empty list, not too long
+    files = data.get('files')
+    if not isinstance(files, list) or not files:
+        raise ResultError('The answer must contain a non-empty "files" list.')
+    if len(files) > MAX_FILES:
+        raise ResultError(f'Too many files: {len(files)} (limit {MAX_FILES}).')
+
+    # 4. Check every file
+    cleaned, seen = [], set()
+    for item in files:
+        if not isinstance(item, dict) or not isinstance(item.get('path'), str) or not isinstance(item.get('content'), str):
+            raise ResultError('Each file needs a text "path" and a text "content".')
+        path = clean_path(item['path'], task_type)
+        content = item['content']
+        if len(content) > MAX_FILE_CHARS:
+            raise ResultError(f'File {path!r} is too large ({len(content)} characters, limit {MAX_FILE_CHARS}).')
+        if '\x00' in content:
+            raise ResultError(f'File {path!r} is not a text file.')
+        if path in seen:
+            raise ResultError(f'File {path!r} appears twice.')
+        seen.add(path)
+        cleaned.append({'path': path, 'content': content})
+
+    # 5. summary and notes: default to '', must be text
+    summary, notes = data.get('summary', ''), data.get('notes', '')
+    if not isinstance(summary, str) or not isinstance(notes, str):
+        raise ResultError('"summary" and "notes" must be text.')
+
+    # 6. Return the clean result
+    return {'files': cleaned, 'summary': summary.strip(), 'notes': notes.strip()}
