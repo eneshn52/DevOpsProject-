@@ -14,7 +14,7 @@ from .workspace_api import APIError, endpoint, master_record, payload, project_r
 
 MAX_TASKS = 20
 TASK_FIELDS = {'key', 'title', 'type', 'instructions', 'requiredCapabilities',
-               'expectedOutput', 'acceptanceCriteria', 'dependsOn'}
+               'workerContext', 'expectedOutput', 'acceptanceCriteria', 'dependsOn'}
 KEY_PATTERN = r'^[A-Za-z][A-Za-z0-9_-]{0,63}$'
 PLAN_SCHEMA = {
     'type': 'object', 'additionalProperties': False, 'required': ['title', 'summary', 'tasks'],
@@ -28,6 +28,8 @@ PLAN_SCHEMA = {
                 'title': {'type': 'string', 'minLength': 1, 'maxLength': 200},
                 'type': {'type': 'string', 'enum': sorted(dict(Task.TYPE_CHOICES))},
                 'instructions': {'type': 'string', 'minLength': 1, 'maxLength': 4000},
+                'workerContext': {'type': 'string', 'maxLength': 4000,
+                                  'description': 'Only extra information this worker needs for this task; empty when none is needed. Never copy the full project context.'},
                 'expectedOutput': {'type': 'string', 'minLength': 1, 'maxLength': 2000},
                 'requiredCapabilities': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True,
                                          'items': {'type': 'string', 'minLength': 1, 'maxLength': 100}},
@@ -76,6 +78,7 @@ def validate_plan(value):
             tasks[key] = {
                 'key': key, 'type': task_type, 'title': text(row, 'title', limit=200, required=True),
                 'instructions': text(row, 'instructions', limit=4000, required=True),
+                'workerContext': text(row, 'workerContext', limit=4000),
                 'expectedOutput': text(row, 'expectedOutput', limit=2000, required=True),
                 'requiredCapabilities': plan_strings(row, 'requiredCapabilities', 100),
                 'acceptanceCriteria': plan_strings(row, 'acceptanceCriteria', 500),
@@ -119,6 +122,7 @@ def plan_json(plan, include_tasks=False):
         result['tasks'] = [
             {'id': str(task.pk), 'key': task.plan_key, 'title': task.title, 'type': task.type,
              'instructions': task.instructions, 'requiredCapabilities': task.required_capabilities,
+             'workerContext': task.worker_context,
              'capabilityWeights': task.capability_weights,
              'expectedOutput': task.expected_output, 'acceptanceCriteria': task.acceptance_criteria,
              'status': task.status, 'dependsOn': [edge.depends_on.plan_key for edge in sorted(task.dependencies.all(), key=lambda edge: edge.pk)]}
@@ -167,6 +171,10 @@ def generate_plan(plan, endpoint_config):
             'before this task starts. Use [] when there are no prerequisites. Keep independent tasks parallel; '
             'a task combining their outputs must depend on every required branch. '
             'Define shared contracts before dependent frontend/backend work. Include review or testing when relevant. '
+            'For each task, set workerContext to only extra facts that worker needs beyond its instructions; '
+            'use an empty string when no extra context is needed. Do not copy the full project context, unrelated '
+            'requirements, or other tasks into workerContext. Direct prerequisite outputs are provided separately '
+            'at execution time. '
             'Classify each task by its work: REQUIREMENTS for requirements/contracts, DATABASE for schemas/SQL, '
             'BACKEND for server logic/APIs, FRONTEND for UI, TESTING for tests, REVIEW for code review, '
             'INTEGRATION for integration/deployment, DOCUMENTATION for documentation, GENERAL otherwise. '
@@ -204,7 +212,8 @@ def finalize_plan(plan, value=None, error=None):
             for row in value['tasks']:
                 tasks[row['key']] = Task.objects.create(
                     plan=current, project=project, plan_key=row['key'], title=row['title'], type=row['type'],
-                    instructions=row['instructions'], required_capabilities=row['requiredCapabilities'],
+                    instructions=row['instructions'], worker_context=row['workerContext'],
+                    required_capabilities=row['requiredCapabilities'],
                     expected_output=row['expectedOutput'], acceptance_criteria=row['acceptanceCriteria'], status='PENDING',
                 )
             TaskDependency.objects.bulk_create([

@@ -126,7 +126,8 @@ def start(request, agent_id, task_id):
             raise APIError('This task belongs to another worker.', 403, 'WRONG_WORKER')
         if task.status not in {'ASSIGNED', 'IN_PROGRESS'}:
             raise APIError('Task must be assigned before execution.', 409, 'TASK_NOT_ASSIGNED')
-        if task.dependencies.exclude(depends_on__status='COMPLETED').exists():
+        dependencies = list(task.dependencies.select_related('depends_on').order_by('depends_on_id'))
+        if any(edge.depends_on.status != 'COMPLETED' for edge in dependencies):
             raise APIError('Task dependencies are not complete.', 409, 'DEPENDENCIES_PENDING')
         previous = WorkerTaskResult.objects.filter(task=task, attempt=task.attempts).first()
         if previous:
@@ -139,8 +140,23 @@ def start(request, agent_id, task_id):
             raise APIError('Configure the worker model first.', 409, 'MODEL_REQUIRED')
         context = agent.context_window or agent.ai_model.max_context or 4096
         prompt = f'Task: {task.title}\nInstructions:\n{task.instructions}\nExpected output:\n{task.expected_output}'
+        if task.worker_context:
+            prompt += '\nTask-specific context:\n' + task.worker_context
         if task.acceptance_criteria:
             prompt += '\nAcceptance criteria:\n' + '\n'.join(map(str, task.acceptance_criteria))
+        completed_dependency_ids = [edge.depends_on_id for edge in dependencies]
+        dependency_outputs = {}
+        if completed_dependency_ids:
+            rows = (WorkerTaskResult.objects.filter(task_id__in=completed_dependency_ids, status='COMPLETED')
+                    .order_by('task_id', '-attempt').values('task_id', 'output'))
+            for row in rows:
+                dependency_outputs.setdefault(row['task_id'], row['output'])
+        if dependency_outputs:
+            prompt += '\nDirect prerequisite outputs:\n'
+            for edge in dependencies:
+                output = dependency_outputs.get(edge.depends_on_id)
+                if output:
+                    prompt += f'\n[{edge.depends_on.title}]\n{output}'
         # Conservative byte upper bound rather than assuming one character = one token.
         if context < 512 or len(prompt.encode()) + 256 > int(context * .8):
             raise APIError('Task exceeds the configured context budget.', 409, 'CONTEXT_LIMIT')

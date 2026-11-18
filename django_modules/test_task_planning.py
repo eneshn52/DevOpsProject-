@@ -32,6 +32,7 @@ def example_plan():
                                      ('backend', 'BACKEND', ['contract'])]:
         tasks.append({'key': key, 'title': f'Implement {key}', 'type': kind,
                       'instructions': f'Complete the {key} work using prerequisite outputs.',
+                      'workerContext': '' if key == 'contract' else f'Only task-specific details for {key}.',
                       'requiredCapabilities': ['Django' if kind == 'BACKEND' else 'Software development'],
                       'expectedOutput': f'Reviewable {key} artifact',
                       'acceptanceCriteria': ['The stated contract is satisfied.'], 'dependsOn': dependencies})
@@ -82,6 +83,10 @@ class TaskPlanningTests(TestCase):
                           'test': ['backend', 'frontend']})
         self.assertEqual(Task.objects.get(plan_key='test').acceptance_criteria, ['The stated contract is satisfied.'])
         self.assertEqual(Task.objects.get(plan_key='test').expected_output, 'Reviewable test artifact')
+        self.assertEqual(Task.objects.get(plan_key='test').worker_context, 'Only task-specific details for test.')
+        self.assertEqual(next(task for task in data['tasks'] if task['key'] == 'test')['workerContext'],
+                         'Only task-specific details for test.')
+        self.assertEqual(Task.objects.get(plan_key='contract').worker_context, '')
         self.assertTrue(Task.objects.filter(pk=legacy.pk, plan__isnull=True).exists())
         saved = Client().get(f"{self.url}{data['id']}/").json()['data']
         self.assertEqual(saved, data)
@@ -259,9 +264,11 @@ class TaskPlanningTests(TestCase):
         invalid = []
         for field, value in [('requiredCapabilities', []), ('acceptanceCriteria', 'works'),
                              ('acceptanceCriteria', [' ']), ('expectedOutput', ''),
-                             ('instructions', 'x' * 4001), ('type', 'MASTER'), ('dependsOn', None)]:
+                             ('instructions', 'x' * 4001), ('workerContext', 'x' * 4001),
+                             ('workerContext', None), ('type', 'MASTER'), ('dependsOn', None)]:
             plan = example_plan(); plan['tasks'][0][field] = value; invalid.append(plan)
         plan = example_plan(); del plan['tasks'][0]['expectedOutput']; invalid.append(plan)
+        plan = example_plan(); del plan['tasks'][0]['workerContext']; invalid.append(plan)
         plan = example_plan(); plan['tasks'][0]['agentId'] = 99; invalid.append(plan)
         plan = example_plan(); plan['tasks'] = []; invalid.append(plan)
         plan = example_plan(); plan['tasks'] = plan['tasks'] * 6; invalid.append(plan)

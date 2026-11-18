@@ -250,6 +250,7 @@ class Task(models.Model):
     plan_key = models.CharField(max_length=64, blank=True)
     required_capabilities = models.JSONField(default=list, blank=True)
     capability_weights = models.JSONField(default=dict, blank=True, editable=False)
+    worker_context = models.TextField(blank=True, default='', help_text="Additional context selected specifically for this task")
     expected_output = models.TextField(blank=True)
     acceptance_criteria = models.JSONField(default=list, blank=True)
     assigned_agent = models.ForeignKey(
