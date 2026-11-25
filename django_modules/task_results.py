@@ -3,6 +3,7 @@
 Flow (called from task_execution):
   start()  -> needs_files(task)? add result_instructions() to the prompt and RESULT_SCHEMA to the job
   result() -> needs_files(task)? check_answer() -> valid: save_artifact() + commit after the DB commit
+                                                         (+ FR-20 integration once the plan is complete)
                                                 -> invalid: the attempt is FAILED with the reason
 """
 import hashlib
@@ -14,6 +15,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from .git_repo import GitError, branch_name, commit_files
+from .integration import integrate_when_complete
 from .models import CodeArtifact, Project, Task, TaskDependency, TaskOutputConflict, TaskPlan
 from .result_format import RESULT_SCHEMA, ResultError, allowed_folders, parse_result
 
@@ -78,6 +80,8 @@ def save_artifact(task, agent, attempt, parsed):
             detect_output_conflicts(artifact)
     # Git runs only after the database change is final, and never while rows are locked.
     transaction.on_commit(lambda: commit_artifact(artifact.pk))
+    if task.plan_id:  # FR-20: the plan's last completed task triggers the integration step
+        transaction.on_commit(lambda: integrate_when_complete(task.plan_id))
     return artifact
 
 

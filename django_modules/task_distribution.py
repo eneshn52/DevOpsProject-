@@ -14,6 +14,7 @@ from django.db.models import Count, Exists, F, OuterRef, Q
 from django.http import HttpResponse
 from django.utils import timezone
 
+from .agent_profiles import adjusted_scores
 from .capabilities import get_scores
 from .models import Agent, Metric, Task, TaskDependency
 from .scheduler import DEFAULT_MAX_TOKENS, pick_task_for
@@ -72,7 +73,7 @@ def choose_task(agent, now):
         return None
     candidates = list(Agent.objects.exclude(role='MASTER'))
     return pick_task_for(agent, tasks, candidates, now,
-                         scores=get_scores([c.pk for c in candidates]),
+                         scores=adjusted_scores(get_scores([c.pk for c in candidates])),  # FR-10
                          queued=queued_counts(),
                          failed=failed_agents([t.pk for t in tasks]),
                          weights=TASK_WEIGHTS)

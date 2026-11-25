@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('django_modules', '0009_workertaskresult'),
+        ('django_modules', '0012_agent_profile'),
     ]
 
     operations = [

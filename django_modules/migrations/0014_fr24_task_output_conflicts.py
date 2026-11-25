@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('django_modules', '0011_merge_20261119_0000'),
+        ('django_modules', '0013_task_worker_context'),
     ]
 
     operations = [

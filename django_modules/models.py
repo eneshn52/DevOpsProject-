@@ -460,3 +460,52 @@ class BenchmarkCase(models.Model):
 
     def __str__(self):
         return f'{self.run} — {self.metric}/{self.case_id}'
+
+
+class ProjectIntegration(models.Model):
+    """FR-20: one merge of a plan's task outputs into a single runnable project tree."""
+    STATUS_CHOICES = [('RUNNING', 'Running'), ('COMPLETED', 'Completed'), ('FAILED', 'Failed')]
+    plan = models.ForeignKey(TaskPlan, on_delete=models.CASCADE, related_name='integrations')
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='integrations')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='RUNNING')
+    fingerprint = models.CharField(max_length=64, help_text='Hash of the task artifacts that were merged')
+    branch = models.CharField(max_length=100, blank=True)
+    commit = models.CharField(max_length=64, blank=True)
+    files = models.JSONField(default=list, blank=True, help_text='Merged files: path, task, bytes, sha256')
+    run = models.JSONField(default=dict, blank=True, help_text='Detected install, start and test commands')
+    conflicts = models.JSONField(default=list, blank=True)
+    problems = models.JSONField(default=list, blank=True)
+    warnings = models.JSONField(default=list, blank=True)
+    error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [models.Index(fields=['plan', '-created_at'], name='integration_plan_history')]
+
+    def __str__(self):
+        """Identify an integration run in the admin."""
+        return f'Integration #{self.pk} — {self.plan} ({self.status})'
+
+
+class AgentProfile(models.Model):
+    """FR-10: what an agent has actually achieved on real (non-benchmark) tasks.
+
+    Rebuilt from Metric rows after every task outcome by agent_profiles.refresh_profile().
+    Counts cover the agent's whole history; the rates and averages cover its most recent
+    outcomes only (agent_profiles.RECENT_WINDOW), so the profile follows the agent's current form.
+    """
+    agent = models.OneToOneField(Agent, on_delete=models.CASCADE, related_name='profile')
+    tasks_completed = models.PositiveIntegerField(default=0)
+    tasks_failed = models.PositiveIntegerField(default=0)
+    sample_size = models.PositiveIntegerField(default=0, help_text="Outcomes used for the rates and averages below")
+    success_rate = models.FloatField(null=True, blank=True, help_text="0 to 1, over the recent outcomes")
+    avg_duration_s = models.FloatField(null=True, blank=True, help_text="Average time spent per attempt, recent outcomes")
+    tokens_per_second = models.FloatField(null=True, blank=True, help_text="Median output speed of recent successful tasks")
+    total_time_s = models.FloatField(default=0.0, help_text="Time spent on all real tasks")
+    last_outcome_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Profile of {self.agent.name}: {self.tasks_completed} done, {self.tasks_failed} failed"
