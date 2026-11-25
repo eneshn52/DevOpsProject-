@@ -70,3 +70,14 @@ class ExecutionFlowTests(LiveServerTestCase):
     def test_local_model(self):
         self.config['ollama_url'] = os.getenv('FR21_OLLAMA_URL', self.config['ollama_url'])
         self.verify_flow()
+
+    @skipUnless(os.getenv('FR21_MODEL'), 'Set FR21_MODEL for real failing cases.')
+    def test_local_model_failed_cases(self):
+        self.config['ollama_url'] = os.getenv('FR21_OLLAMA_URL', self.config['ollama_url'])
+        self.task.test_cases = [{'input': 2, 'expected': 4}, {'input': 2, 'expected': 5}]
+        self.task.save(update_fields=['test_cases'])
+        self.assertEqual(worker.run(self.config, once=True), 0)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, 'FAILED')
+        self.assertEqual(self.task.test_result['status'], 'failed', self.task.test_result)
+        self.assertEqual(len(self.task.test_result['cases']), 2)

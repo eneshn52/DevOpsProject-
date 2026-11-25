@@ -15,6 +15,7 @@ from django.db.models.deletion import ProtectedError
 from django.http import JsonResponse
 from django.utils import timezone
 
+from .agent_profiles import profile_json
 from .models import (
     AIModel, APIConnection, Agent, ChatMessage, Conversation, Project,
     Workspace, WorkspaceImport,
@@ -138,7 +139,8 @@ def agent_json(agent):
             'apiId': str(agent.api_connection_id) if agent.api_connection_id else '', 'role': agent.role,
             'machine': agent.machine, 'contextWindow': agent.context_window, 'status': agent.status,
             'online': agent.is_online(), 'lastSeenSeconds': agent.seconds_since_heartbeat(),
-            'lastHeartbeat': agent.last_heartbeat.isoformat() if agent.last_heartbeat else None, 'collapsed': True}
+            'lastHeartbeat': agent.last_heartbeat.isoformat() if agent.last_heartbeat else None,
+            'profile': profile_json(agent), 'collapsed': True}
 
 
 def conversation_json(conversation):
@@ -182,7 +184,7 @@ def workspace_detail(request):
     return {'name': Workspace.objects.get(pk=1).name, 'database': 'postgresql' if settings.DATABASES['default']['ENGINE'].endswith('postgresql') else 'sqlite',
             'projects': [project_json(item) for item in projects], 'projectId': str(selected.pk) if selected else None,
             'chats': chats, 'master': agent_json(master_record()),
-            'models': [agent_json(item) for item in Agent.objects.exclude(role='MASTER').select_related('ai_model').order_by('pk')],
+            'models': [agent_json(item) for item in Agent.objects.exclude(role='MASTER').select_related('ai_model', 'profile').order_by('pk')],
             'apis': [connection_json(item) for item in APIConnection.objects.order_by('created_at')]}
 
 
@@ -352,7 +354,7 @@ def agents(request):
     """List specialists or create one within the workspace capacity limit."""
     if request.method == 'GET':
         Agent.mark_stale()
-        return [agent_json(item) for item in Agent.objects.exclude(role='MASTER').select_related('ai_model').order_by('pk')]
+        return [agent_json(item) for item in Agent.objects.exclude(role='MASTER').select_related('ai_model', 'profile').order_by('pk')]
     data = payload(request, AGENT_FIELDS)
     with transaction.atomic():
         workspace_lock()

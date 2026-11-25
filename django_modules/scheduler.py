@@ -5,13 +5,14 @@ Functions take Agent/Task objects but run no queries, so tests can use
 unsaved instances, e.g. Agent(pk=1, status='IDLE', last_heartbeat=..., context_window=8192).
 """
 
+from .task_weights import DEFAULT_WEIGHTS
+
 # --- Constants (tune later, keep them here so they are easy to find) ---
 # The heartbeat timeout lives in settings.AGENT_HEARTBEAT_TIMEOUT (FR-6); reuse Agent.is_online().
 CONTEXT_SAFETY = 0.8         # use at most 80% of the context window
 DEFAULT_EST_TOKENS = 2000    # the planner does not fill est_tokens yet
 DEFAULT_MAX_TOKENS = 2048    # the planner does not fill max_tokens yet
 QUEUE_PENALTY = 10           # λ: points subtracted per task already queued on the agent
-DEFAULT_WEIGHTS = {'coding': 0.25, 'reasoning': 0.25, 'context': 0.25, 'speed': 0.25}  # task types without their own weights
 
 
 def is_eligible(agent, task, now, failed_agent_ids):
@@ -89,7 +90,8 @@ def pick_task_for(agent, ready_tasks, candidates, now, scores, queued, failed, w
           * if the asking agent has the highest score, return this task;
           * otherwise move on to the next task (a better agent will ask for it).
       - On a tie for the highest score, the asking agent wins (it is idle and here now).
-      - Task types missing from `weights` use DEFAULT_WEIGHTS.
+      - Stored task capability weights take precedence; unclassified legacy/unsaved tasks use
+        the supplied type table, then DEFAULT_WEIGHTS for types missing from the table.
       - No task won: return None.
 
     This function only decides; it does not claim or save anything.
@@ -103,7 +105,7 @@ def pick_task_for(agent, ready_tasks, candidates, now, scores, queued, failed, w
         if not is_eligible(agent, task, now, failed_agents):
             continue
 
-        task_weights = weights.get(task.type, DEFAULT_WEIGHTS)
+        task_weights = task.capability_weights or weights.get(task.type, DEFAULT_WEIGHTS)
         asking_agent_score = None
         highest_score = float('-inf')
 
