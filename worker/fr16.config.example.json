@@ -1,0 +1,10 @@
+{
+  "server_url": "http://127.0.0.1:8002",
+  "agent_id": 1,
+  "ollama_url": "http://127.0.0.1:11434",
+  "ollama_key": "",
+  "model": "",
+  "interval": 10,
+  "timeout": 5,
+  "shared_token": "REPLACE_WITH_RANDOM_SHARED_TOKEN"
+}
