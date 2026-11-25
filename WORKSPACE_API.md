@@ -29,7 +29,8 @@ All writes require Django CSRF protection. The frontend sends `X-CSRFToken` and 
 | `/api/projects/` | GET, POST | List active projects or create one |
 | `/api/projects/{id}/` | GET, PATCH, DELETE | Read/edit/archive; PATCH `archived: false` restores |
 | `/api/projects/{id}/plans/` | GET, POST | List plan history or generate a saved plan with UUID `id` and `request` |
-| `/api/projects/{id}/plans/{uuid}/` | GET | Read a saved plan and all its task requirements and dependencies |
+| `/api/projects/{id}/plans/{uuid}/` | GET | Read a saved plan and all its task requirements and dependencies; includes its latest `integration` |
+| `/api/projects/{id}/plans/{uuid}/integration/` | GET, POST | FR-20: read the latest integration (`null` if none), or merge the plan's completed task outputs into one project (`201` new, `200` same inputs as last time, `409 PLAN_INCOMPLETE`/`PLAN_NOT_READY`) |
 | `/api/conversations/` | GET, POST | List/search chats or create with `projectId`, optional UUID `id` and `title` |
 | `/api/conversations/{uuid}/` | GET, PATCH, DELETE | Read messages, rename, soft-delete; PATCH `deleted: false` restores |
 | `/api/connections/` | GET, POST | List endpoints or save `name`, `url`, and optional `key` |
@@ -131,6 +132,21 @@ Use `Task.objects.create()` or `task.save()` for task creation and type edits. D
 Apply the migration with `python manage.py migrate`. Verify FR-13 and its integrations with `python -m pytest django_modules/test_task_classification.py django_modules/test_task_planning.py django_modules/test_task_distribution.py django_modules/test_scheduler.py` against the configured PostgreSQL test database.
 
 For local PostgreSQL bound to IPv4 on Windows, use `$env:DB_HOST = '127.0.0.1'` if live worker tests time out connecting through `localhost`. The FR-13 full-suite verification used this setting. For Docker, rebuild and restart the web service with `docker compose --env-file .env.docker up -d --build web`; its startup applies migrations automatically.
+
+## Project integration (FR-20)
+
+When every task of a saved plan is `COMPLETED`, the integration step merges the newest FR-18 artifact of each task into one project tree and commits it to the project's branch (`project/<id>-<name>` in `GENERATED_REPO_DIR`) as a single `[integration]` commit. It runs automatically after the plan's last task result, and on demand with `POST .../integration/` or **Integrate project** in the task-plan dialog.
+
+| Step | Rule |
+| --- | --- |
+| Merge | Tasks are applied in dependency order. A task may replace a file only if it depends, directly or transitively, on the task that wrote it (recorded in `warnings`). Two independent tasks writing different content to one path is a `conflict`. |
+| Check | `.py` files must compile, `.json` files must parse, relative `src`/`href` links in `.html` files must point at merged files, and at least one start command must be found. Nothing generated is executed; FR-21 runs tests. |
+| Scaffold | The integrator writes the root files `README.md` (install/start/test commands, layout, tasks), `requirements.txt` (`-r` for every folder's `requirements.txt`), and `integration.json` (which task wrote each file). They contain no timestamps, so the same inputs give the same tree. |
+| Commit | Only when there are no conflicts or problems. Git runs after the database transaction, never under a lock. |
+
+Start commands are detected from `backend/manage.py`, `backend/app.py`/`main.py`/`server.py`/`run.py`, a `package.json` with a `start` or `dev` script in `backend/` or `frontend/`, or a static `frontend/index.html`. `python -m pytest tests` is listed when `tests/` contains `test_*.py` files.
+
+Each run is stored as a `ProjectIntegration` (status `RUNNING`, `COMPLETED`, or `FAILED`, with `files`, `run`, `conflicts`, `problems`, `warnings`, `branch`, `commit`, `error`). A run with the same inputs is returned instead of repeated, except after a Git failure, after committing is switched on, or when a `RUNNING` record is more than 10 minutes old. A newer task attempt changes the inputs and is integrated again. Files written to the branch by other plans are left in place. Apply migration 0011 with `python manage.py migrate`; tests: `django_modules/test_integration.py`.
 
 ## Browser migration
 
