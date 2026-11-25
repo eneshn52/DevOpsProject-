@@ -20,6 +20,7 @@ from .scheduler import DEFAULT_MAX_TOKENS, pick_task_for
 from .task_weights import TASK_WEIGHTS
 from .workspace_api import APIError, endpoint
 from .workspace_api import payload
+from worker.code_review import valid as valid_review
 
 ACTIVE_STATUSES = ('ASSIGNED', 'IN_PROGRESS')  # tasks an agent holds right now
 CLAIM_ATTEMPTS = 3                             # retries when another agent wins the race for a task
@@ -133,7 +134,7 @@ def test_result(request, agent_id, task_id):
     task = Task.objects.get(pk=task_id, assigned_agent_id=agent_id)
     if request.method == 'GET':
         return task.test_result
-    data = payload(request, {'source', 'status', 'cases', 'detail', 'duration', 'exitCode', 'attempt'}, max_bytes=1048576)
+    data = payload(request, {'source', 'status', 'cases', 'detail', 'duration', 'exitCode', 'attempt', 'review'}, max_bytes=1048576)
     status = data.get('status')
     if status not in ('passed', 'failed', 'invalid_code', 'timeout', 'error', 'missing_tests'):
         raise APIError('Invalid test status.')
@@ -142,9 +143,14 @@ def test_result(request, agent_id, task_id):
             and isinstance(data.get('cases'), list) and len(data['cases']) == len(task.test_cases)
             and all(isinstance(row, dict) and row.get('status') == 'passed' for row in data['cases'])):
         raise APIError('Passing requires a passing result for every configured test.')
+    review = data.get('review')
+    if review is not None and (not valid_review(review, ('approved', 'rejected', 'error'))
+                               or (review['status'] == 'approved' and status != 'passed')):
+        raise APIError('Invalid review or verdict inconsistent with test outcome.')
+    approved = status == 'passed' and review is not None and review['status'] == 'approved'
     saved = Task.objects.filter(pk=task_id, assigned_agent_id=agent_id, attempts=data.get('attempt'),
                                 status__in=ACTIVE_STATUSES, test_cases__isnull=False).update(
-        status='COMPLETED' if status == 'passed' else 'FAILED', test_result=data)
+        status='COMPLETED' if approved else 'FAILED', test_result=data)
     if not saved and task.test_result != data:
         raise APIError('This task attempt is no longer active.', 409)
     return data

@@ -209,9 +209,12 @@ def run_next(workspace, config, agent_id, model):
             workspace.request('POST', f'/api/agents/{agent_id}/heartbeat/',
                               {'alive': True, 'status': 'BUSY', 'currentTaskId': task['id']})
         report = job.result()
-    workspace.request('POST', f"/api/agents/{agent_id}/tasks/{task['id']}/test-result/", report)
+    try:
+        workspace.request('POST', f"/api/agents/{agent_id}/tasks/{task['id']}/test-result/", report)
+    except OSError as error:
+        raise WorkerError(f"Could not confirm delivery of task {task['id']} review: {error}") from error
     workspace.heartbeat(agent_id)
-    logger.info('Task %s test result: %s', task['id'], report['status'])
+    logger.info('Task %s test result: %s; review: %s', task['id'], report['status'], report['review']['status'])
 
 
 def stop(*_):
@@ -233,13 +236,15 @@ def main(argv=None):
     parser.add_argument('--run-tests', action='store_true', help='Claim and test Python solve(value) tasks.')
     parser.add_argument('--sign-off', action='store_true', help='On Ctrl+C, mark the agent offline immediately instead of letting it time out.')
     parser.add_argument('-v', '--verbose', action='store_true')
+    parser.add_argument('--review-model', help='Ollama reviewer model (defaults to the generation model).')
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format='%(asctime)s %(levelname)s %(message)s', datefmt='%H:%M:%S')
     signal.signal(signal.SIGTERM, stop)
     if hasattr(signal, 'SIGBREAK'):
         signal.signal(signal.SIGBREAK, stop)  # Ctrl+Break on Windows
     try:
-        return run(dict(load_config(args), run_tests=args.run_tests), once=args.once, sign_off=args.sign_off)
+        return run(dict(load_config(args), run_tests=args.run_tests, review_model=args.review_model),
+                   once=args.once, sign_off=args.sign_off)
     except WorkerError as error:
         logger.error('%s', error)
         return 2

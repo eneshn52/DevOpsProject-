@@ -3,6 +3,11 @@ import json
 import time
 import urllib.request
 
+if __package__:
+    from .code_review import review_code
+else:
+    from code_review import review_code
+
 from pydantic_monty import CollectStreams, Monty, MontyError, MontyRuntimeError, MontySyntaxError
 
 LIMITS = dict(max_memory=8_000_000, max_feed_duration_secs=1, max_recursion_depth=100,
@@ -84,4 +89,6 @@ def execute(config, model, task):
     except (KeyError, TypeError, ValueError, OSError) as exc:
         result = {'status': 'error', 'detail': str(exc)[:1024], 'cases': [], 'exitCode': 1,
                   'duration': time.monotonic() - started}
-    return dict(result, source=source, attempt=task['attempt'])
+    report = dict(result, source=source, attempt=task['attempt'])
+    report['review'] = review_code(config, model, task, report)
+    return report

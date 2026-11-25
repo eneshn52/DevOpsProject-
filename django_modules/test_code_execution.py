@@ -53,20 +53,56 @@ class ExecutionFlowTests(LiveServerTestCase):
         self.config = dict(worker.DEFAULTS, agent_id=self.agent.pk, server_url=self.live_server_url,
                            run_tests=True, model=os.getenv('FR21_MODEL', 'fixture'))
 
-    def verify_flow(self):
+    def verify_flow(self, expected='COMPLETED'):
         self.assertEqual(worker.run(self.config, once=True), 0)
         self.task.refresh_from_db()
-        self.assertEqual(self.task.status, 'COMPLETED', self.task.test_result)
+        self.assertEqual(self.task.status, expected, self.task.test_result)
         path = f'/api/agents/{self.agent.pk}/tasks/{self.task.pk}/test-result/'
         self.assertEqual(self.client.get(path).json()['data'], self.task.test_result)
         self.assertEqual(len(self.task.test_result['cases']), len(CASES))
 
     def test_generated_fixture(self):
         with patch.object(worker, 'ollama_problem', return_value=None), patch.object(
-                code_tests, 'generate', return_value='def solve(value): return value * 2'):
+                code_tests, 'generate', return_value='def solve(value): return value * 2'), patch.object(
+                code_tests, 'review_code', return_value={'status': 'approved', 'comments': ['value * 2 doubles both signed inputs.'],
+                    'issues': [], 'improvements': [], 'rejectionReasons': []}):
             self.verify_flow()
+
+    def test_rejected_even_with_passing_examples(self):
+        review = {'status': 'rejected', 'comments': ['The lookup table omits zero.'],
+                  'issues': ['solve(0) raises KeyError'], 'improvements': ['Double the input directly.'],
+                  'rejectionReasons': ['Only handles the two example inputs.']}
+        with patch.object(worker, 'ollama_problem', return_value=None), patch.object(
+                code_tests, 'generate', return_value='def solve(x): return {2:4,-3:-6}[x]'), patch.object(
+                code_tests, 'review_code', return_value=review):
+            self.verify_flow('FAILED')
+        self.assertEqual(self.task.test_result['status'], 'passed')
+        self.assertEqual(self.task.test_result['review'], review)
+
+    def test_legacy_result_without_review_cannot_complete(self):
+        self.task.assigned_agent = self.agent
+        self.task.status = 'ASSIGNED'
+        self.task.save()
+        path = f'/api/agents/{self.agent.pk}/tasks/{self.task.pk}/test-result/'
+        body = {'status': 'passed', 'source': 'def solve(x): return x*2', 'exitCode': 0,
+                'cases': [{'status': 'passed'} for _ in CASES], 'attempt': self.task.attempts}
+        invalid = self.client.post(path, dict(body, review={'status': 'approved'}), content_type='application/json')
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(self.client.post(path, body, content_type='application/json').status_code, 200)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, 'FAILED')
 
     @skipUnless(os.getenv('FR21_MODEL'), 'Set FR21_MODEL to run against a local Ollama model.')
     def test_local_model(self):
         self.config['ollama_url'] = os.getenv('FR21_OLLAMA_URL', self.config['ollama_url'])
         self.verify_flow()
+        self.assertEqual(self.task.test_result['review']['status'], 'approved')
+
+    @skipUnless(os.getenv('FR21_MODEL'), 'Set FR21_MODEL for real review of failed tests.')
+    def test_local_model_rejection(self):
+        self.config['ollama_url'] = os.getenv('FR21_OLLAMA_URL', self.config['ollama_url'])
+        self.task.test_cases = [{'input': 2, 'expected': 4}, {'input': 2, 'expected': 5}]
+        self.task.save(update_fields=['test_cases'])
+        self.verify_flow('FAILED')
+        self.assertEqual(self.task.test_result['status'], 'failed')
+        self.assertEqual(self.task.test_result['review']['status'], 'rejected', self.task.test_result)
