@@ -24,6 +24,7 @@ from django_modules import agent_heartbeat
 from django_modules import task_distribution
 
 urlpatterns = [
+    path('api/agents/<int:agent_id>/tasks/<int:task_id>/test-result/', task_distribution.test_result),
     path('admin/', admin.site.urls),
     path('', views.index, name='index'),
     path('health/', views.health, name='health'),

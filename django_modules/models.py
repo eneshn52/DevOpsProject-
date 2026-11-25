@@ -259,6 +259,8 @@ class Task(models.Model):
     type = models.CharField(max_length=50, default='GENERAL', help_text="e.g. FRONTEND, BACKEND, DATABASE, TESTING, INTEGRATION")
     title = models.CharField(max_length=200)
     instructions = models.TextField(blank=True)
+    test_cases = models.JSONField(null=True, blank=True)
+    test_result = models.JSONField(null=True, blank=True)
     weights = models.FloatField(default=1.0)
     est_tokens = models.PositiveIntegerField(null=True, blank=True)
     max_tokens = models.PositiveIntegerField(null=True, blank=True)

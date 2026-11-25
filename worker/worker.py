@@ -16,6 +16,7 @@ import os
 import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, wait as wait_future
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -46,7 +47,7 @@ class Workspace:
         if data is not None:
             body = urllib.parse.urlencode(data).encode() if form else json.dumps(data).encode()
             headers['Content-Type'] = 'application/x-www-form-urlencoded' if form else 'application/json'
-        if form:
+        if form or method == 'POST':
             headers['Referer'] = self.base_url + path
             token = next((cookie.value for cookie in self.cookies if cookie.name == 'csrftoken'), '')
             headers['X-CSRFToken'] = token
@@ -166,6 +167,8 @@ def run(config, once=False, sign_off=False):
                                     'online' if result.get('online') else result.get('status'), config['interval'])
                     logger.debug('Heartbeat sent')
                     ready = True
+                    if config.get('run_tests'):
+                        run_next(workspace, config, agent['id'], model)
                 elif ready is not False:
                     logger.warning('%s. Pausing heartbeats until it is back; the agent shows Offline after 30 s.', problem)
                     ready = False
@@ -190,6 +193,27 @@ def run(config, once=False, sign_off=False):
         return 0
 
 
+def run_next(workspace, config, agent_id, model):
+    if __package__:
+        from .code_tests import execute
+    else:
+        from code_tests import execute
+    task = workspace.request('GET', f'/api/agents/{agent_id}/next-task/?runner=python').get('data')
+    if not task or 'testCases' not in task:
+        return
+    if not any(cookie.name == 'csrftoken' for cookie in workspace.cookies):
+        workspace.request('GET', '/admin/login/')
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        job = pool.submit(execute, config, model, task)
+        while not wait_future([job], timeout=config['interval']).done:
+            workspace.request('POST', f'/api/agents/{agent_id}/heartbeat/',
+                              {'alive': True, 'status': 'BUSY', 'currentTaskId': task['id']})
+        report = job.result()
+    workspace.request('POST', f"/api/agents/{agent_id}/tasks/{task['id']}/test-result/", report)
+    workspace.heartbeat(agent_id)
+    logger.info('Task %s test result: %s', task['id'], report['status'])
+
+
 def stop(*_):
     """Treat a termination signal like Ctrl+C so the worker stops the same way."""
     raise KeyboardInterrupt
@@ -206,6 +230,7 @@ def main(argv=None):
     parser.add_argument('--model', help='Override the model to check (default: the specialist\'s configured model).')
     parser.add_argument('--interval', type=float)
     parser.add_argument('--once', action='store_true', help='Send a single heartbeat and exit.')
+    parser.add_argument('--run-tests', action='store_true', help='Claim and test Python solve(value) tasks.')
     parser.add_argument('--sign-off', action='store_true', help='On Ctrl+C, mark the agent offline immediately instead of letting it time out.')
     parser.add_argument('-v', '--verbose', action='store_true')
     args = parser.parse_args(argv)
@@ -214,7 +239,7 @@ def main(argv=None):
     if hasattr(signal, 'SIGBREAK'):
         signal.signal(signal.SIGBREAK, stop)  # Ctrl+Break on Windows
     try:
-        return run(load_config(args), once=args.once, sign_off=args.sign_off)
+        return run(dict(load_config(args), run_tests=args.run_tests), once=args.once, sign_off=args.sign_off)
     except WorkerError as error:
         logger.error('%s', error)
         return 2

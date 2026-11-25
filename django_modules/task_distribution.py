@@ -19,6 +19,7 @@ from .models import Agent, Metric, Task, TaskDependency
 from .scheduler import DEFAULT_MAX_TOKENS, pick_task_for
 from .task_weights import TASK_WEIGHTS
 from .workspace_api import APIError, endpoint
+from .workspace_api import payload
 
 ACTIVE_STATUSES = ('ASSIGNED', 'IN_PROGRESS')  # tasks an agent holds right now
 CLAIM_ATTEMPTS = 3                             # retries when another agent wins the race for a task
@@ -26,7 +27,8 @@ CLAIM_ATTEMPTS = 3                             # retries when another agent wins
 
 def task_json(task):
     """What the worker needs to run a task."""
-    return {'id': str(task.pk), 'projectId': str(task.project_id) if task.project_id else None,
+    return {**({'testCases': task.test_cases} if task.test_cases is not None else {}),
+            'id': str(task.pk), 'projectId': str(task.project_id) if task.project_id else None,
             'type': task.type, 'title': task.title, 'instructions': task.instructions,
             'expectedOutput': task.expected_output, 'acceptanceCriteria': task.acceptance_criteria,
             'requiredCapabilities': task.required_capabilities,
@@ -64,9 +66,11 @@ def failed_agents(task_ids):
     return failed
 
 
-def choose_task(agent, now):
+def choose_task(agent, now, code_tests=False):
     """Load the scheduler's inputs from the database and ask it which task this agent should take."""
     tasks = ready_tasks()
+    if code_tests:
+        tasks = [task for task in tasks if task.test_cases is not None]
     if not tasks:
         return None
     candidates = list(Agent.objects.exclude(role='MASTER'))
@@ -108,7 +112,10 @@ def next_task(request, agent_id):
             return task_json(held)
 
         for _ in range(CLAIM_ATTEMPTS):
-            task = choose_task(agent, now)
+            if request.GET.get('runner') == 'python':
+                task = choose_task(agent, now, code_tests=True)
+            else:
+                task = choose_task(agent, now)
             if task is None:
                 return None, 204
             # Claim only if the task is still PENDING. This single UPDATE is atomic in the database,
@@ -119,3 +126,25 @@ def next_task(request, agent_id):
                 task.refresh_from_db()
                 return task_json(task)
         return None, 204
+
+
+@endpoint('GET', 'POST')
+def test_result(request, agent_id, task_id):
+    task = Task.objects.get(pk=task_id, assigned_agent_id=agent_id)
+    if request.method == 'GET':
+        return task.test_result
+    data = payload(request, {'source', 'status', 'cases', 'detail', 'duration', 'exitCode', 'attempt'}, max_bytes=1048576)
+    status = data.get('status')
+    if status not in ('passed', 'failed', 'invalid_code', 'timeout', 'error', 'missing_tests'):
+        raise APIError('Invalid test status.')
+    if status == 'passed' and not (
+            task.test_cases and data.get('source') and data.get('exitCode') == 0
+            and isinstance(data.get('cases'), list) and len(data['cases']) == len(task.test_cases)
+            and all(isinstance(row, dict) and row.get('status') == 'passed' for row in data['cases'])):
+        raise APIError('Passing requires a passing result for every configured test.')
+    saved = Task.objects.filter(pk=task_id, assigned_agent_id=agent_id, attempts=data.get('attempt'),
+                                status__in=ACTIVE_STATUSES, test_cases__isnull=False).update(
+        status='COMPLETED' if status == 'passed' else 'FAILED', test_result=data)
+    if not saved and task.test_result != data:
+        raise APIError('This task attempt is no longer active.', 409)
+    return data
