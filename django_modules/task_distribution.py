@@ -18,6 +18,7 @@ from .agent_profiles import adjusted_scores
 from .capabilities import get_scores
 from .models import Agent, Metric, Task, TaskDependency, WorkerTaskResult
 from .scheduler import DEFAULT_MAX_TOKENS, pick_task_for
+from .task_retry import release_abandoned_tasks, retry_exclusions
 from .task_weights import TASK_WEIGHTS
 from .workspace_api import APIError, endpoint
 from .workspace_api import payload
@@ -103,11 +104,11 @@ def choose_task(agent, now, runner='execute'):
     if not tasks:
         return None
     candidates = list(Agent.objects.exclude(role='MASTER'))
-    return pick_task_for(agent, tasks, candidates, now,
-                         scores=adjusted_scores(get_scores([c.pk for c in candidates])),  # FR-10
-                         queued=queued_counts(),
-                         failed=failed_agents([t.pk for t in tasks]),
-                         weights=TASK_WEIGHTS)
+    scores = adjusted_scores(get_scores([c.pk for c in candidates]))  # FR-10
+    # FR-23: a retry goes to an agent that has not failed the task, unless nobody else can take it.
+    failed = retry_exclusions(tasks, candidates, now, scores, failed_agents([t.pk for t in tasks]))
+    return pick_task_for(agent, tasks, candidates, now, scores=scores, queued=queued_counts(),
+                         failed=failed, weights=TASK_WEIGHTS)
 
 
 def supports_task(task, runner):
@@ -151,6 +152,7 @@ def next_task(request, agent_id):
                 return None, 204
             return assignment(held, runner)
 
+        release_abandoned_tasks(now)  # FR-23: take back the tasks of workers that went offline
         for _ in range(CLAIM_ATTEMPTS):
             if runner in ('python', 'combined'):
                 task = choose_task(agent, now, runner)

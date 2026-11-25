@@ -164,6 +164,8 @@ MAILERS = {
 import json
 FR16_WORKER_TOKENS = json.loads(os.getenv('FR16_WORKER_TOKENS', '{}'))
 FR16_TASK_TIMEOUT = int(os.getenv('FR16_TASK_TIMEOUT', '180'))
+# FR-23: how many times a task may be attempted in total before it stays FAILED.
+TASK_MAX_ATTEMPTS = int(os.getenv('TASK_MAX_ATTEMPTS', '3'))
 
 # FR-18: local Git repo for generated code, one branch per project. Kept OUTSIDE this
 # repository (next to it by default). Set GENERATED_REPO_DIR="" to turn committing off.

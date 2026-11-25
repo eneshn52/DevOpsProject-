@@ -75,6 +75,7 @@ class ExecutionApiTests(TestCase):
         self.assertEqual(WorkerTaskResult.objects.get().output, result['output'])
         self.assertEqual(self.post('result', dict(result, output='different')).status_code, 409)
 
+    @override_settings(TASK_MAX_ATTEMPTS=1)  # FR-23: no retries here, so one failure is final
     def test_failure_is_recorded(self):
         result = self.result(status='FAILED', output='', error='Model unavailable')
         self.assertEqual(self.post('result', result).status_code, 200)
@@ -311,7 +312,7 @@ class WorkerExecutionLiveTests(LiveServerTestCase):
                 for expected, success in [(4, True), (5, False)]:
                     tested = Task.objects.create(title='Double an integer', project=project, type='BACKEND',
                                                  test_cases=[{'input': 2, 'expected': expected}])
-                    with override_settings(GENERATED_REPO_DIR=''):
+                    with override_settings(GENERATED_REPO_DIR='', TASK_MAX_ATTEMPTS=1):  # FR-23: one failure is final
                         self.assertEqual(original_worker.main([*args, '--run-tests']), 0 if success else 1)
                     tested.refresh_from_db()
                     self.assertEqual(tested.test_result['review']['status'], 'approved' if success else 'rejected')
