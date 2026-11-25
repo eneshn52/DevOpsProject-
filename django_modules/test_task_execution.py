@@ -11,7 +11,7 @@ from django.test import Client, LiveServerTestCase, SimpleTestCase, TestCase, ov
 from django.utils import timezone
 
 from .task_execution import sign_job
-from django_modules.models import AIModel, Agent, Metric, Task, TaskDependency
+from django_modules.models import AIModel, Agent, Metric, Project, Task, TaskDependency, TaskPlan
 from .models import WorkerTaskResult
 from worker import task_runner as execute
 from worker import worker as original_worker
@@ -132,6 +132,43 @@ class ExecutionApiTests(TestCase):
 
     def test_context_guard_does_not_reserve_task(self):
         self.task.instructions = 'x' * 10000
+        self.task.save()
+        self.assertEqual(self.post('start', {}).status_code, 409)
+        self.assertFalse(WorkerTaskResult.objects.exists())
+
+    def test_worker_prompt_contains_only_task_context_and_direct_prerequisite_outputs(self):
+        project = Project.objects.create(name='Scoped project', requirements_text='Project-wide private requirements')
+        plan = TaskPlan.objects.create(project=project, request_text='Unrelated project request',
+                                       project_context={'requirements': 'Project-wide private context'},
+                                       model_name='planner', agent_name='master')
+        self.task.project = project
+        self.task.plan = plan
+        self.task.worker_context = 'Use the shared API contract for this task.'
+        self.task.save()
+        prerequisite = Task.objects.create(project=project, plan=plan, plan_key='contract',
+                                           title='API contract', status='COMPLETED')
+        unrelated = Task.objects.create(project=project, plan=plan, plan_key='unrelated',
+                                        title='Unrelated secret task', status='COMPLETED')
+        TaskDependency.objects.create(task=self.task, depends_on=prerequisite)
+        WorkerTaskResult.objects.create(task=prerequisite, agent=self.agent, attempt=1, status='COMPLETED',
+                                        model_name='test', prompt='prior prompt', context_window=8192,
+                                        output='GET /items returns a JSON list.', deadline=timezone.now())
+        WorkerTaskResult.objects.create(task=unrelated, agent=self.agent, attempt=1, status='COMPLETED',
+                                        model_name='test', prompt='unrelated prompt', context_window=8192,
+                                        output='Unrelated confidential output.', deadline=timezone.now())
+
+        prompt = self.start()['prompt']
+
+        self.assertIn('Use the shared API contract for this task.', prompt)
+        self.assertIn('[API contract]\nGET /items returns a JSON list.', prompt)
+        self.assertNotIn('Project-wide private requirements', prompt)
+        self.assertNotIn('Project-wide private context', prompt)
+        self.assertNotIn('Unrelated project request', prompt)
+        self.assertNotIn('Unrelated secret task', prompt)
+        self.assertNotIn('Unrelated confidential output.', prompt)
+
+    def test_oversized_task_specific_context_does_not_reserve_execution(self):
+        self.task.worker_context = 'x' * 10000
         self.task.save()
         self.assertEqual(self.post('start', {}).status_code, 409)
         self.assertFalse(WorkerTaskResult.objects.exists())
