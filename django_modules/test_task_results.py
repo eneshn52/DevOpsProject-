@@ -221,6 +221,7 @@ class ProjectTaskResultTests(TestCase):
 
         self.assertFalse(TaskOutputConflict.objects.exists())
 
+    @override_settings(TASK_MAX_ATTEMPTS=1)  # FR-23: no retries here, so one failure is final
     def test_resolver_must_return_only_the_conflicted_file(self):
         self.finish(json.dumps({'files': [{'path': 'backend/shared.py', 'content': 'one'}], 'summary': 'First'}))
         other = self.make_task('Build another feature')
@@ -266,6 +267,7 @@ class ProjectTaskResultTests(TestCase):
         self.assertTrue(conflict.resolver_task.plan_key.startswith('fr24-'))
         self.assertEqual(conflict.resolver_task.dependencies.count(), 2)
 
+    @override_settings(TASK_MAX_ATTEMPTS=1)  # FR-23: no retries here, so one failure is final
     def test_answer_that_is_not_json_fails_the_attempt_with_the_reason(self):
         data, _ = self.finish('Sure! Here is the code: def login(): ...')
         self.assertEqual(data['status'], 'FAILED')

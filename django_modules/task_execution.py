@@ -11,8 +11,9 @@ from django.views.decorators.csrf import csrf_exempt
 from .task_distribution import prerequisite_context, task_json
 from .agent_profiles import refresh_profile
 from .models import Agent, Metric, Project, Task, TaskOutputConflict, TaskPlan, WorkerTaskResult
-from .task_results import (check_answer, check_resolver_answer, fail_conflicts_for_task, job_format,
+from .task_results import (check_answer, check_resolver_answer, job_format,
                            needs_files, result_instructions, save_artifact)
+from .task_retry import after_failure, fail_execution, retry_note, retry_seed
 from worker.code_review import valid as valid_review
 from django_modules.workspace_api import APIError, payload
 
@@ -99,19 +100,7 @@ def endpoint(*methods):
 def expire_executions(agent):
     """Caller holds the agent lock. Expiration is checked on worker requests."""
     for execution in WorkerTaskResult.objects.filter(agent=agent, status='RUNNING', deadline__lt=timezone.now()):
-        execution.status, execution.error = 'FAILED', 'Execution deadline exceeded.'
-        execution.completed_at = timezone.now()
-        execution.save(update_fields=['status', 'error', 'completed_at'])
-        Task.objects.filter(pk=execution.task_id, assigned_agent=agent, attempts=execution.attempt, status='IN_PROGRESS').update(status='FAILED')
-        Metric.objects.create(task=execution.task, agent=agent, model=execution.model_name, success=False,
-                              duration_s=(execution.completed_at - execution.started_at).total_seconds())
-        from .benchmarking import record_case_result
-        record_case_result(execution.task, execution)
-        fail_conflicts_for_task(execution.task)
-        refresh_profile(agent)  # FR-10: a timed-out attempt counts as a failure
-        if agent.current_task_id == execution.task_id:
-            agent.current_task, agent.status = None, 'IDLE'
-            agent.save(update_fields=['current_task', 'status'])
+        fail_execution(execution, 'Execution deadline exceeded.', agent)  # FR-23: retried if attempts remain
 
 
 def job_json(execution):
@@ -173,6 +162,7 @@ def start(request, agent_id, task_id):
         prerequisite_outputs = prerequisite_context(task, exclude=source_task_ids)
         if prerequisite_outputs:
             prompt += '\nDirect prerequisite outputs:\n' + prerequisite_outputs
+        prompt += retry_note(task)  # FR-23: a retry is told why the last attempt failed
         if needs_files(task):
             prompt += result_instructions(task)
         if task.test_cases is not None:
@@ -186,7 +176,7 @@ def start(request, agent_id, task_id):
             task.attempts = 1
         execution = WorkerTaskResult.objects.create(task=task, agent=agent, attempt=task.attempts,
             model_name=agent.ai_model.ollama_name, prompt=prompt, context_window=context,
-            options={'temperature': 0, 'seed': 42, 'num_ctx': context,
+            options={'temperature': 0, 'seed': retry_seed(task), 'num_ctx': context,
                      'num_predict': min(task.max_tokens or 1024, context // 5)},
             deadline=timezone.now() + timedelta(seconds=settings.FR16_TASK_TIMEOUT))
         task.status = 'IN_PROGRESS'
@@ -252,6 +242,12 @@ def result(request, agent_id, task_id):
     with transaction.atomic():
         agent = Agent.objects.select_for_update().exclude(role='MASTER').get(pk=agent_id)
         task = Task.objects.select_for_update().get(pk=task_id)
+        # FR-23: a failed attempt may already be re-queued (task no longer assigned to this worker),
+        # so a repeated delivery of the same final result is answered before the assignment check.
+        final = (WorkerTaskResult.objects.filter(task=task, agent=agent, attempt=data['attempt'])
+                 .exclude(status='RUNNING').first())
+        if final and str(final.lease) == data['lease'] and final.result == data:
+            return {'status': final.status, 'id': final.pk}
         if task.assigned_agent_id != agent.pk or task.attempts != data['attempt']:
             raise APIError('Task assignment or attempt changed.', 409, 'STALE_ASSIGNMENT')
         execution = WorkerTaskResult.objects.select_for_update().get(task=task, agent=agent, attempt=data['attempt'])
@@ -293,7 +289,7 @@ def result(request, agent_id, task_id):
         if parsed:
             save_artifact(task, agent, execution.attempt, parsed)
         elif execution.status == 'FAILED':
-            fail_conflicts_for_task(task)
+            after_failure(task, execution.attempt)  # FR-23: back in the queue, or final
         Metric.objects.create(task=task, agent=agent, model=execution.model_name,
             success=execution.status == 'COMPLETED', duration_s=data['duration_s'],
             prompt_tokens=data['prompt_tokens'], output_tokens=data['output_tokens'], retries=max(0, task.attempts - 1))
