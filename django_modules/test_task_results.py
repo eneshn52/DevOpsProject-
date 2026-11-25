@@ -95,6 +95,21 @@ class ProjectTaskResultTests(TestCase):
         unsigned = {key: value for key, value in job.items() if key != 'signature'}
         self.assertEqual(sign_job(unsigned, self.agent.pk)['signature'], job['signature'])
 
+    def test_review_of_different_source_cannot_publish_artifact(self):
+        self.task.test_cases = [{'input': 1, 'expected': 2}]
+        self.task.save()
+        job = self.start()
+        report = dict(source='def solve(x): return 2*x', attempt=job['attempt'], status='passed',
+                      exitCode=0, cases=[{'status': 'passed'}], review=dict(status='approved',
+                      comments=['Doubles the input.'], issues=[], improvements=[], rejectionReasons=[]))
+        body = dict(attempt=job['attempt'], lease=job['lease'], status='COMPLETED', error='',
+                    output=answer('backend/app.py'), duration_s=1, prompt_tokens=8, output_tokens=12,
+                    model_metadata={'digest': 'fixture'}, testReport=report)
+        for _ in range(2):
+            self.assertEqual(self.post(self.task, 'result', body).json()['data']['status'], 'FAILED')
+        self.assertFalse(CodeArtifact.objects.exists())
+        self.assertEqual(Metric.objects.count(), 1)
+
     # --- Step 3: what happens to the answer ------------------------------------
 
     def test_valid_answer_is_stored_as_an_artifact(self):
@@ -134,6 +149,31 @@ class ProjectTaskResultTests(TestCase):
                          ['backend/app.py', 'tests/test_app.py'])
 
     @skipIf(shutil.which('git') is None, 'git is not installed')
+    def test_tested_artifacts_use_scoped_context_and_enter_conflict_resolution_once(self):
+        for task, expression in [(self.task, 'x*2'), (self.make_task('Alternative'), 'x+x')]:
+            task.test_cases = [{'input': 2, 'expected': 4}]
+            task.worker_context = 'Use integer arithmetic.'
+            task.save()
+            job = self.start(task)
+            self.assertIn(task.worker_context, job['testTask']['executionPrompt'])
+            source = f'def solve(x): return {expression}'
+            report = dict(status='passed', source=source, attempt=job['attempt'], exitCode=0,
+                          cases=[{'status': 'passed'}])
+            report['review'] = dict(status='approved', comments=[f'{expression} doubles the integer input.'],
+                                    issues=[], improvements=[], rejectionReasons=[])
+            body = dict(attempt=job['attempt'], lease=job['lease'], status='COMPLETED', error='',
+                        output=json.dumps({'files': [{'path': 'backend/double.py', 'content': source}]}),
+                        duration_s=1, prompt_tokens=10, output_tokens=10, model_metadata={'digest': 'fixture'},
+                        testReport=report)
+            with self.captureOnCommitCallbacks(execute=True):
+                for _ in range(2):
+                    self.assertEqual(self.post(task, 'result', body).json()['data']['status'], 'COMPLETED')
+        conflict = TaskOutputConflict.objects.get()
+        self.assertEqual(conflict.status, 'OPEN')
+        self.assertIsNotNone(conflict.resolver_task_id)
+        self.assertEqual(conflict.artifacts.count(), 2)
+        self.assertEqual(Metric.objects.count(), 2)
+
     def test_conflicting_parallel_outputs_queue_resolver_and_hold_the_file(self):
         first = json.dumps({'files': [{'path': 'backend/shared.py', 'content': 'version one'}],
                             'summary': 'First implementation'})

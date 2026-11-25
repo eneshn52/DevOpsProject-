@@ -72,7 +72,28 @@ def generate(job, config):
                 raise ValueError('Invalid model token metadata.')
         result.update(status='COMPLETED', output=output, prompt_tokens=answer.get('prompt_eval_count', 0),
                       output_tokens=answer.get('eval_count', 0), generation_duration_s=generation_duration_s)
-    except (OSError, ValueError, KeyError, TypeError) as error:
+        if 'testTask' in job:
+            if not config.get('run_tests'):
+                raise ValueError('This task requires --execute --run-tests.')
+            if __package__:
+                from .code_tests import test_code, review_code
+            else:
+                from code_tests import test_code, review_code
+            source = output
+            if job.get('format'):
+                files = json.loads(output)['files']
+                if len(files) != 1 or not files[0]['path'].endswith('.py'):
+                    raise ValueError('Tested project tasks require one Python file.')
+                source = files[0]['content']
+            if not isinstance(source, str) or len(source.encode()) > 32768:
+                raise ValueError('Tested source must be text of at most 32 KiB.')
+            report = dict(test_code(source, job['testTask']['testCases']), source=source, attempt=job['attempt'])
+            report['review'] = review_code(config, job['model'], job['testTask'], report)
+            result['testReport'] = report
+            if report['status'] != 'passed' or report['review']['status'] != 'approved':
+                result.update(status='FAILED', error='Automated tests or review did not approve the output.')
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, ImportError) as error:
+        result['status'] = 'FAILED'
         result['error'] = f'{type(error).__name__}: {error}'[:1000]
     result['duration_s'] = time.monotonic() - started
     if result['duration_s'] > job['timeout_s']:
@@ -134,7 +155,8 @@ def run(config, outbox, once=False, sign_off=False):
                             return 1
                     else:
                         workspace.heartbeat(agent_id)
-                        task = workspace.request('GET', f'/api/agents/{agent_id}/next-task/').get('data')
+                        query = '?runner=combined' if config.get('run_tests') else ''
+                        task = workspace.request('GET', f'/api/agents/{agent_id}/next-task/{query}').get('data')
                         if task:
                             active = workspace.request('POST', f'/api/agents/{agent_id}/tasks/{task["id"]}/start/', {})['data']
                             job = active

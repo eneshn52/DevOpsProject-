@@ -1,10 +1,14 @@
 """FR-16 additions: leases, result storage and a real HTTP worker/model round trip."""
+import os
+from unittest import skipUnless
 import io
 import json
+import os
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
+from unittest import skipUnless
 
 from django.contrib.auth import get_user_model
 from django.test import Client, LiveServerTestCase, SimpleTestCase, TestCase, override_settings
@@ -218,6 +222,29 @@ class ExecutionClientTests(SimpleTestCase):
 class WorkerExecutionLiveTests(LiveServerTestCase):
     host = '127.0.0.1'
 
+    @skipUnless(os.getenv('FR21_MODEL'), 'Set FR21_MODEL for a real combined execution.')
+    @override_settings(GENERATED_REPO_DIR='')
+    def test_local_model_combined_project(self):
+        from .models import CodeArtifact, Project
+        from .capabilities import save_scores
+        model = AIModel.objects.create(ollama_name=os.environ['FR21_MODEL'])
+        agent = Agent.objects.create(name='combined', ai_model=model, context_window=8192)
+        save_scores(agent, dict(coding=80, reasoning=80, context=80, speed=80))
+        task = Task.objects.create(project=Project.objects.create(name='Local integration'), type='BACKEND',
+                                   title='Double an integer', instructions='Return twice the input integer.',
+                                   expected_output='solve(value) returns an integer directly.',
+                                   test_cases=[{'input': 2, 'expected': 4}], max_tokens=512)
+        config = dict(DEFAULTS, agent_id=agent.pk, run_tests=True, server_url=self.live_server_url,
+                      ollama_url=os.getenv('FR21_OLLAMA_URL', DEFAULTS['ollama_url']),
+                      shared_token='fixture-local-token', interval=1)
+        with TemporaryDirectory() as folder, override_settings(FR16_WORKER_TOKENS={str(agent.pk): config['shared_token']}):
+            code = execute.run(config, Path(folder) / 'pending.json', once=True)
+        task.refresh_from_db()
+        self.assertEqual(code, 0, task.test_result or WorkerTaskResult.objects.get(task=task).error)
+        self.assertEqual(task.test_result['review']['status'], 'approved')
+        self.assertEqual(task.test_result['status'], 'passed')
+        self.assertEqual(CodeArtifact.objects.get(task=task).files['files'][0]['content'], task.test_result['source'])
+
     def test_worker_fetches_runs_reports_and_keeps_heartbeat_alive(self):
         import threading
         import time
@@ -242,7 +269,14 @@ class WorkerExecutionLiveTests(LiveServerTestCase):
                 body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 seen.append(body)
                 time.sleep(.15)
-                self.reply({'done': True, 'response': 'def add(a,b):\n return a+b',
+                if 'system' in body:
+                    answer = json.dumps(dict(status='approved', comments=['x * 2 doubles the input.'],
+                                             issues=[], improvements=[], rejectionReasons=[]))
+                elif 'format' in body:
+                    answer = json.dumps({'files': [{'path': 'backend/solve.py', 'content': 'def solve(x): return x*2'}]})
+                else:
+                    answer = 'def add(a,b):\n return a+b'
+                self.reply({'done': True, 'response': answer,
                             'prompt_eval_count': 20, 'eval_count': 12})
 
             def log_message(self, *args):
@@ -272,11 +306,28 @@ class WorkerExecutionLiveTests(LiveServerTestCase):
                 pending.refresh_from_db()
                 self.assertEqual(pending.status, 'COMPLETED')
                 self.assertEqual(pending.assigned_agent_id, agent.pk)
+                from .models import Project, CodeArtifact
+                project = Project.objects.create(name='Combined runner')
+                for expected, success in [(4, True), (5, False)]:
+                    tested = Task.objects.create(title='Double an integer', project=project, type='BACKEND',
+                                                 test_cases=[{'input': 2, 'expected': expected}])
+                    with override_settings(GENERATED_REPO_DIR=''):
+                        self.assertEqual(original_worker.main([*args, '--run-tests']), 0 if success else 1)
+                    tested.refresh_from_db()
+                    self.assertEqual(tested.test_result['review']['status'], 'approved' if success else 'rejected')
+                    self.assertEqual(tested.test_result['status'], 'passed' if success else 'failed')
+                    self.assertEqual(tested.status, 'COMPLETED' if success else 'FAILED')
+                    execution = WorkerTaskResult.objects.get(task=tested)
+                    self.assertEqual(execution.result['testReport'], tested.test_result)
+                    self.assertEqual(CodeArtifact.objects.filter(task=tested).count(), int(success))
+                    if success:
+                        artifact = CodeArtifact.objects.get(task=tested)
+                        self.assertEqual(artifact.files['files'][0]['content'], tested.test_result['source'])
             task.refresh_from_db()
             self.assertEqual(task.status, 'COMPLETED')
             self.assertEqual(WorkerTaskResult.objects.get(task=task).output, 'def add(a,b):\n return a+b')
             self.assertIn('busy heartbeat', seen)
-            self.assertEqual(Metric.objects.count(), 2)
+            self.assertEqual(Metric.objects.count(), 4)
             self.assertEqual(WorkerTaskResult.objects.get(task=task).result['model_metadata']['digest'], 'stub-digest')
         finally:
             server.shutdown()

@@ -16,10 +16,12 @@ from django.utils import timezone
 
 from .agent_profiles import adjusted_scores
 from .capabilities import get_scores
-from .models import Agent, Metric, Task, TaskDependency
+from .models import Agent, Metric, Task, TaskDependency, WorkerTaskResult
 from .scheduler import DEFAULT_MAX_TOKENS, pick_task_for
 from .task_weights import TASK_WEIGHTS
 from .workspace_api import APIError, endpoint
+from .workspace_api import payload
+from worker.code_review import valid as valid_review
 
 ACTIVE_STATUSES = ('ASSIGNED', 'IN_PROGRESS')  # tasks an agent holds right now
 CLAIM_ATTEMPTS = 3                             # retries when another agent wins the race for a task
@@ -27,12 +29,40 @@ CLAIM_ATTEMPTS = 3                             # retries when another agent wins
 
 def task_json(task):
     """What the worker needs to run a task."""
-    return {'id': str(task.pk), 'projectId': str(task.project_id) if task.project_id else None,
+    return {**({'testCases': task.test_cases} if task.test_cases is not None else {}),
+            'id': str(task.pk), 'projectId': str(task.project_id) if task.project_id else None,
             'type': task.type, 'title': task.title, 'instructions': task.instructions,
             'expectedOutput': task.expected_output, 'acceptanceCriteria': task.acceptance_criteria,
             'requiredCapabilities': task.required_capabilities,
+            'workerContext': task.worker_context,
             'capabilityWeights': task.capability_weights,
             'maxTokens': task.max_tokens or DEFAULT_MAX_TOKENS, 'attempt': task.attempts}
+
+
+def prerequisite_context(task, exclude=()):
+    """Only direct, completed prerequisites; a standalone task has no leased result row."""
+    dependencies = list(task.dependencies.select_related('depends_on')
+                        .filter(depends_on__status='COMPLETED').exclude(depends_on_id__in=exclude)
+                        .order_by('depends_on_id'))
+    outputs = {}
+    for pk, output in (WorkerTaskResult.objects.filter(task_id__in=[d.depends_on_id for d in dependencies],
+                                                       status='COMPLETED').order_by('task_id', '-attempt')
+                       .values_list('task_id', 'output')):
+        outputs.setdefault(pk, output)
+    sections = []
+    for edge in dependencies:
+        parent = edge.depends_on
+        output = outputs.get(parent.pk) or (parent.test_result or {}).get('source')
+        if output:
+            sections.append(f'[{parent.title}]\n{output}')
+    return '\n'.join(sections)
+
+
+def assignment(task, runner):
+    data = task_json(task)
+    if runner == 'python':
+        data['prerequisiteOutputs'] = prerequisite_context(task)
+    return data
 
 
 def ready_tasks():
@@ -66,9 +96,10 @@ def failed_agents(task_ids):
     return failed
 
 
-def choose_task(agent, now):
+def choose_task(agent, now, runner='execute'):
     """Load the scheduler's inputs from the database and ask it which task this agent should take."""
     tasks = ready_tasks()
+    tasks = [task for task in tasks if supports_task(task, runner)]
     if not tasks:
         return None
     candidates = list(Agent.objects.exclude(role='MASTER'))
@@ -77,6 +108,14 @@ def choose_task(agent, now):
                          queued=queued_counts(),
                          failed=failed_agents([t.pk for t in tasks]),
                          weights=TASK_WEIGHTS)
+
+
+def supports_task(task, runner):
+    if runner == 'combined':
+        return True
+    if runner == 'python':
+        return task.test_cases is not None and task.project_id is None
+    return task.test_cases is None
 
 
 def no_content(view):
@@ -106,11 +145,17 @@ def next_task(request, agent_id):
         # previous answer got lost on the network), give the same task back instead of a new one.
         held = (Task.objects.filter(assigned_agent=agent, status__in=ACTIVE_STATUSES)
                 .order_by('created_at', 'pk').first())
+        runner = request.GET.get('runner', 'execute')
         if held:
-            return task_json(held)
+            if not supports_task(held, runner) or (runner == 'python' and held.status != 'ASSIGNED'):
+                return None, 204
+            return assignment(held, runner)
 
         for _ in range(CLAIM_ATTEMPTS):
-            task = choose_task(agent, now)
+            if runner in ('python', 'combined'):
+                task = choose_task(agent, now, runner)
+            else:
+                task = choose_task(agent, now)
             if task is None:
                 return None, 204
             # Claim only if the task is still PENDING. This single UPDATE is atomic in the database,
@@ -119,5 +164,32 @@ def next_task(request, agent_id):
                        .update(status='ASSIGNED', assigned_agent=agent, attempts=F('attempts') + 1))
             if claimed:
                 task.refresh_from_db()
-                return task_json(task)
+                return assignment(task, runner)
         return None, 204
+
+
+@endpoint('GET', 'POST')
+def test_result(request, agent_id, task_id):
+    task = Task.objects.get(pk=task_id, assigned_agent_id=agent_id)
+    if request.method == 'GET':
+        return task.test_result
+    data = payload(request, {'source', 'status', 'cases', 'detail', 'duration', 'exitCode', 'attempt', 'review'}, max_bytes=1048576)
+    status = data.get('status')
+    if status not in ('passed', 'failed', 'invalid_code', 'timeout', 'error', 'missing_tests'):
+        raise APIError('Invalid test status.')
+    if status == 'passed' and not (
+            task.test_cases and data.get('source') and data.get('exitCode') == 0
+            and isinstance(data.get('cases'), list) and len(data['cases']) == len(task.test_cases)
+            and all(isinstance(row, dict) and row.get('status') == 'passed' for row in data['cases'])):
+        raise APIError('Passing requires a passing result for every configured test.')
+    review = data.get('review')
+    if review is not None and (not valid_review(review, ('approved', 'rejected', 'error'))
+                               or (review['status'] == 'approved' and status != 'passed')):
+        raise APIError('Invalid review or verdict inconsistent with test outcome.')
+    approved = status == 'passed' and review is not None and review['status'] == 'approved'
+    saved = Task.objects.filter(pk=task_id, assigned_agent_id=agent_id, attempts=data.get('attempt'),
+                                status='ASSIGNED', project__isnull=True, test_cases__isnull=False).update(
+        status='COMPLETED' if approved else 'FAILED', test_result=data)
+    if not saved and task.test_result != data:
+        raise APIError('This task attempt is no longer active.', 409)
+    return data

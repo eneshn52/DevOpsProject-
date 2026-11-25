@@ -8,10 +8,12 @@ from django.db import transaction
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
+from .task_distribution import prerequisite_context, task_json
 from .agent_profiles import refresh_profile
 from .models import Agent, Metric, Project, Task, TaskOutputConflict, TaskPlan, WorkerTaskResult
 from .task_results import (check_answer, check_resolver_answer, fail_conflicts_for_task, job_format,
                            needs_files, result_instructions, save_artifact)
+from worker.code_review import valid as valid_review
 from django_modules.workspace_api import APIError, payload
 
 # FR-16-only access boundary. Existing view implementations remain unchanged.
@@ -118,6 +120,8 @@ def job_json(execution):
             'context_window': execution.context_window,
             'timeout_s': max(1, int((execution.deadline - timezone.now()).total_seconds()))}
     answer_format = job_format(execution.task)
+    if execution.task.test_cases is not None:
+        data['testTask'] = dict(task_json(execution.task), executionPrompt=execution.prompt)
     if answer_format:  # FR-18: project tasks answer in the agreed JSON shape
         data['format'] = answer_format
     return sign_job(data, execution.agent_id)
@@ -166,23 +170,15 @@ def start(request, agent_id, task_id):
             prompt += '\nTask-specific context:\n' + task.worker_context
         if task.acceptance_criteria:
             prompt += '\nAcceptance criteria:\n' + '\n'.join(map(str, task.acceptance_criteria))
-        completed_dependency_ids = [edge.depends_on_id for edge in dependencies]
-        dependency_outputs = {}
-        if completed_dependency_ids:
-            rows = (WorkerTaskResult.objects.filter(task_id__in=completed_dependency_ids, status='COMPLETED')
-                    .order_by('task_id', '-attempt').values('task_id', 'output'))
-            for row in rows:
-                if row['task_id'] in source_task_ids:
-                    continue
-                dependency_outputs.setdefault(row['task_id'], row['output'])
-        if dependency_outputs:
-            prompt += '\nDirect prerequisite outputs:\n'
-            for edge in dependencies:
-                output = dependency_outputs.get(edge.depends_on_id)
-                if output:
-                    prompt += f'\n[{edge.depends_on.title}]\n{output}'
+        prerequisite_outputs = prerequisite_context(task, exclude=source_task_ids)
+        if prerequisite_outputs:
+            prompt += '\nDirect prerequisite outputs:\n' + prerequisite_outputs
         if needs_files(task):
             prompt += result_instructions(task)
+        if task.test_cases is not None:
+            prompt += ('\nImplement solve(value) as pure Python using builtins. '
+                       + ('Return exactly one .py file in the required files array.' if needs_files(task)
+                          else 'Return only raw Python source without Markdown fences.'))
         # Conservative byte upper bound rather than assuming one character = one token.
         if context < 512 or len(prompt.encode()) + 256 > int(context * .8):
             raise APIError('Task exceeds the configured context budget.', 409, 'CONTEXT_LIMIT')
@@ -233,13 +229,25 @@ def validate(data):
         raise APIError('Invalid execution lease.')
 
 
+def approved_output(task, report, source):
+    """Require passing evidence for this exact output and attempt before saving an artifact."""
+    if not isinstance(report, dict) or not source or report.get('source') != source:
+        return False
+    cases = report.get('cases')
+    return (report.get('attempt') == task.attempts and report.get('status') == 'passed'
+            and report.get('exitCode') == 0 and isinstance(cases, list)
+            and isinstance(task.test_cases, list) and len(cases) == len(task.test_cases) > 0
+            and all(isinstance(r, dict) and r.get('status') == 'passed' for r in cases)
+            and valid_review(report.get('review'), ('approved',)))
+
+
 @csrf_exempt
 @for_worker(strict=True)
 @endpoint('POST')
 def result(request, agent_id, task_id):
     fields = {'attempt', 'lease', 'status', 'output', 'error', 'duration_s', 'generation_duration_s',
-              'prompt_tokens', 'output_tokens', 'model_metadata'}
-    data = payload(request, fields, max_bytes=700000)
+              'prompt_tokens', 'output_tokens', 'model_metadata', 'testReport'}
+    data = payload(request, fields, max_bytes=1048576)
     validate(data)
     with transaction.atomic():
         agent = Agent.objects.select_for_update().exclude(role='MASTER').get(pk=agent_id)
@@ -269,9 +277,19 @@ def result(request, agent_id, task_id):
             if problem:  # FR-18: an unusable answer is a failed attempt, with the reason kept
                 execution.status, execution.error = 'FAILED', problem
                 parsed = None
+        if task.test_cases is not None:
+            report = data.get('testReport')
+            files = parsed['files'] if parsed else []
+            source = (files[0]['content'] if len(files) == 1 and files[0]['path'].endswith('.py')
+                      else '' if needs_files(task) else data['output'])
+            task.test_result = report
+            if not approved_output(task, report, source):
+                execution.status = 'FAILED'
+                execution.error = execution.error or 'Automated testing and review did not approve this output.'
+                parsed = None
         execution.save(update_fields=['result', 'output', 'error', 'status', 'completed_at'])
         task.status = execution.status
-        task.save(update_fields=['status'])
+        task.save(update_fields=['status', 'test_result'] if task.test_cases is not None else ['status'])
         if parsed:
             save_artifact(task, agent, execution.attempt, parsed)
         elif execution.status == 'FAILED':
