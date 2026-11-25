@@ -14,6 +14,7 @@ from django.db.models import Count, Exists, F, OuterRef, Q
 from django.http import HttpResponse
 from django.utils import timezone
 
+from .agent_profiles import adjusted_scores
 from .capabilities import get_scores
 from .models import Agent, Metric, Task, TaskDependency
 from .scheduler import DEFAULT_MAX_TOKENS, pick_task_for
@@ -33,6 +34,7 @@ def task_json(task):
             'type': task.type, 'title': task.title, 'instructions': task.instructions,
             'expectedOutput': task.expected_output, 'acceptanceCriteria': task.acceptance_criteria,
             'requiredCapabilities': task.required_capabilities,
+            'capabilityWeights': task.capability_weights,
             'maxTokens': task.max_tokens or DEFAULT_MAX_TOKENS, 'attempt': task.attempts}
 
 
@@ -67,19 +69,26 @@ def failed_agents(task_ids):
     return failed
 
 
-def choose_task(agent, now, code_tests=False):
+def choose_task(agent, now, runner='execute'):
     """Load the scheduler's inputs from the database and ask it which task this agent should take."""
     tasks = ready_tasks()
-    if code_tests:
-        tasks = [task for task in tasks if task.test_cases is not None]
+    tasks = [task for task in tasks if supports_task(task, runner)]
     if not tasks:
         return None
     candidates = list(Agent.objects.exclude(role='MASTER'))
     return pick_task_for(agent, tasks, candidates, now,
-                         scores=get_scores([c.pk for c in candidates]),
+                         scores=adjusted_scores(get_scores([c.pk for c in candidates])),  # FR-10
                          queued=queued_counts(),
                          failed=failed_agents([t.pk for t in tasks]),
                          weights=TASK_WEIGHTS)
+
+
+def supports_task(task, runner):
+    if runner == 'combined':
+        return True
+    if runner == 'python':
+        return task.test_cases is not None and task.project_id is None
+    return task.test_cases is None
 
 
 def no_content(view):
@@ -109,12 +118,15 @@ def next_task(request, agent_id):
         # previous answer got lost on the network), give the same task back instead of a new one.
         held = (Task.objects.filter(assigned_agent=agent, status__in=ACTIVE_STATUSES)
                 .order_by('created_at', 'pk').first())
+        runner = request.GET.get('runner', 'execute')
         if held:
+            if not supports_task(held, runner) or (runner == 'python' and held.status != 'ASSIGNED'):
+                return None, 204
             return task_json(held)
 
         for _ in range(CLAIM_ATTEMPTS):
-            if request.GET.get('runner') == 'python':
-                task = choose_task(agent, now, code_tests=True)
+            if runner in ('python', 'combined'):
+                task = choose_task(agent, now, runner)
             else:
                 task = choose_task(agent, now)
             if task is None:
@@ -149,7 +161,7 @@ def test_result(request, agent_id, task_id):
         raise APIError('Invalid review or verdict inconsistent with test outcome.')
     approved = status == 'passed' and review is not None and review['status'] == 'approved'
     saved = Task.objects.filter(pk=task_id, assigned_agent_id=agent_id, attempts=data.get('attempt'),
-                                status__in=ACTIVE_STATUSES, test_cases__isnull=False).update(
+                                status='ASSIGNED', project__isnull=True, test_cases__isnull=False).update(
         status='COMPLETED' if approved else 'FAILED', test_result=data)
     if not saved and task.test_result != data:
         raise APIError('This task attempt is no longer active.', 409)

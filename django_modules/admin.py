@@ -5,6 +5,7 @@ from .models import (
     AIModel,
     Agent,
     AgentCapabilityScore,
+    AgentProfile,
     Project,
     ChatMessage,
     Task,
@@ -16,6 +17,8 @@ from .models import (
     APIConnection,
     Conversation,
     ChatRequest,
+    BenchmarkRun,
+    BenchmarkCase,
 )
 
 
@@ -86,6 +89,22 @@ class AgentAdmin(admin.ModelAdmin):
     list_filter = ('status', 'ai_model')
     search_fields = ('name', 'machine')
     inlines = [AgentCapabilityScoreInline]
+    actions = ['start_fr9_benchmark']
+
+    @admin.action(description='Start FR-9 benchmark for selected worker')
+    def start_fr9_benchmark(self, request, queryset):
+        from .benchmarking import start_benchmark
+        started, errors = [], []
+        for agent in queryset:
+            try:
+                run = start_benchmark(agent)
+                started.append(f'#{run.pk} ({agent.name})')
+            except ValueError as exc:
+                errors.append(f'{agent.name}: {exc}')
+        if started:
+            self.message_user(request, 'Benchmark queued: ' + ', '.join(started) + '. Results arrive via the running worker.')
+        if errors:
+            self.message_user(request, 'Not started — ' + '; '.join(errors), level='error')
 
 
 @admin.register(AgentCapabilityScore)
@@ -151,7 +170,7 @@ class TaskAdmin(admin.ModelAdmin):
     list_filter = ('status', 'type', 'project')
     search_fields = ('title', 'instructions')
     inlines = [TaskDependencyInline]
-    readonly_fields = ('plan', 'plan_key', 'required_capabilities', 'expected_output', 'acceptance_criteria')
+    readonly_fields = ('plan', 'plan_key', 'required_capabilities', 'capability_weights', 'expected_output', 'acceptance_criteria')
 
     def has_change_permission(self, request, obj=None):
         """Keep generated plan tasks immutable while allowing legacy task edits."""
@@ -203,6 +222,17 @@ class MetricAdmin(admin.ModelAdmin):
     search_fields = ('model', 'task__title')
 
 
+@admin.register(AgentProfile)
+class AgentProfileAdmin(admin.ModelAdmin):
+    """FR-10: read-only view; profiles are rebuilt from Metric rows after each task."""
+    list_display = ('agent', 'tasks_completed', 'tasks_failed', 'success_rate', 'avg_duration_s',
+                    'tokens_per_second', 'total_time_s', 'last_outcome_at')
+    readonly_fields = [field.name for field in AgentProfile._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+
 @admin.register(CodeArtifact)
 class CodeArtifactAdmin(admin.ModelAdmin):
     list_display = ('id', 'task', 'agent', 'attempt', 'test_verdict', 'created_at')
@@ -216,3 +246,60 @@ class ArtifactReviewAdmin(admin.ModelAdmin):
     list_display = ('id', 'artifact', 'reviewer_agent', 'verdict', 'created_at')
     list_filter = ('verdict', 'reviewer_agent')
     search_fields = ('comments',)
+
+
+from .models import WorkerTaskResult
+
+@admin.register(WorkerTaskResult)
+class WorkerTaskResultAdmin(admin.ModelAdmin):
+    list_display = ('id', 'task', 'agent', 'attempt', 'status', 'model_name', 'started_at', 'completed_at')
+    list_filter = ('status', 'agent')
+    readonly_fields = tuple(field.name for field in WorkerTaskResult._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class BenchmarkCaseInline(admin.TabularInline):
+    model = BenchmarkCase
+    extra = 0
+    can_delete = False
+    readonly_fields = ('task', 'metric', 'case_id', 'outcome', 'completed_at')
+
+
+@admin.register(BenchmarkRun)
+class BenchmarkRunAdmin(admin.ModelAdmin):
+    list_display = ('id', 'agent', 'model_name', 'suite_version', 'status', 'created_at', 'completed_at')
+    list_filter = ('status', 'suite_version')
+    search_fields = ('agent__name', 'model_name')
+    readonly_fields = tuple(field.name for field in BenchmarkRun._meta.fields)
+    inlines = [BenchmarkCaseInline]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+from .models import ProjectIntegration
+
+
+@admin.register(ProjectIntegration)
+class ProjectIntegrationAdmin(admin.ModelAdmin):
+    """FR-20 runs are records of what was merged; they are created only by the integration step."""
+    list_display = ('id', 'project', 'plan', 'status', 'branch', 'commit', 'created_at', 'completed_at')
+    list_filter = ('status',)
+    search_fields = ('project__name', 'plan__title', 'commit')
+    readonly_fields = tuple(field.name for field in ProjectIntegration._meta.fields)
+
+    def has_add_permission(self, request):
+        """Integrations are produced by the integration step, not typed in."""
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        """Keep the integration history for inspection."""
+        return False

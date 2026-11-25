@@ -22,9 +22,13 @@ from django_modules import workspace_api
 from django_modules import task_planning
 from django_modules import agent_heartbeat
 from django_modules import task_distribution
+from django_modules import task_execution
 
 urlpatterns = [
     path('api/agents/<int:agent_id>/tasks/<int:task_id>/test-result/', task_distribution.test_result),
+    path('api/agents/<int:agent_id>/execution-profile/', task_execution.profile, name='worker_execution_profile'),
+    path('api/agents/<int:agent_id>/tasks/<int:task_id>/start/', task_execution.start, name='worker_task_start'),
+    path('api/agents/<int:agent_id>/tasks/<int:task_id>/result/', task_execution.result, name='worker_task_result'),
     path('admin/', admin.site.urls),
     path('', views.index, name='index'),
     path('health/', views.health, name='health'),
@@ -36,16 +40,17 @@ urlpatterns = [
     path('api/projects/<int:project_id>/', workspace_api.project_detail, name='project_detail'),
     path('api/projects/<int:project_id>/plans/', task_planning.project_plans, name='project_plans'),
     path('api/projects/<int:project_id>/plans/<uuid:plan_id>/', task_planning.plan_detail, name='plan_detail'),
+    path('api/projects/<int:project_id>/plans/<uuid:plan_id>/integration/', task_planning.plan_integration, name='plan_integration'),
     path('api/conversations/', workspace_api.conversations, name='conversations'),
     path('api/conversations/<uuid:conversation_id>/', workspace_api.conversation_detail, name='conversation_detail'),
     path('api/connections/', workspace_api.connections, name='connections'),
     path('api/connections/<uuid:connection_id>/', workspace_api.connection_detail, name='connection_detail'),
     path('api/agents/', workspace_api.agents, name='agents'),
     path('api/agents/<int:agent_id>/', workspace_api.agent_detail, name='agent_detail'),
-    path('api/agents/<int:agent_id>/heartbeat/', agent_heartbeat.heartbeat, name='agent_heartbeat'),
-    path('api/agents/<int:agent_id>/heartbeat', agent_heartbeat.heartbeat, name='agent_heartbeat_no_slash'),
-    path('api/agents/<int:agent_id>/next-task/', task_distribution.next_task, name='agent_next_task'),
-    path('api/agents/<int:agent_id>/next-task', task_distribution.next_task, name='agent_next_task_no_slash'),
+    path('api/agents/<int:agent_id>/heartbeat/', task_execution.for_worker()(agent_heartbeat.heartbeat), name='agent_heartbeat'),
+    path('api/agents/<int:agent_id>/heartbeat', task_execution.for_worker()(agent_heartbeat.heartbeat), name='agent_heartbeat_no_slash'),
+    path('api/agents/<int:agent_id>/next-task/', task_execution.for_worker()(task_distribution.next_task), name='agent_next_task'),
+    path('api/agents/<int:agent_id>/next-task', task_execution.for_worker()(task_distribution.next_task), name='agent_next_task_no_slash'),
     path('api/master/', workspace_api.master, name='master'),
 ]
 

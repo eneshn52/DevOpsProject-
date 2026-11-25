@@ -27,7 +27,7 @@ SECRET_KEY = 'django-insecure-i=lbs0ub76i6r#ug^%aeh1ikorirdb=w$)f8&r%)-dio@3k_3h
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [host.strip() for host in os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1,[::1]').split(',') if host.strip()]
 
 
 # Application definition
@@ -137,7 +137,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Europe/Istanbul'
 
 USE_I18N = True
 
@@ -158,3 +158,13 @@ MAILERS = {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
 }
+
+
+# FR-16 execution settings; existing settings are preserved.
+import json
+FR16_WORKER_TOKENS = json.loads(os.getenv('FR16_WORKER_TOKENS', '{}'))
+FR16_TASK_TIMEOUT = int(os.getenv('FR16_TASK_TIMEOUT', '180'))
+
+# FR-18: local Git repo for generated code, one branch per project. Kept OUTSIDE this
+# repository (next to it by default). Set GENERATED_REPO_DIR="" to turn committing off.
+GENERATED_REPO_DIR = os.getenv('GENERATED_REPO_DIR', str(BASE_DIR.parent / 'generated-projects'))

@@ -7,6 +7,8 @@ from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.core.validators import MinValueValidator, MaxValueValidator
 
+from .task_weights import TASK_WEIGHTS, capability_weights_for
+
 
 # ==========================================
 # 1. AI Infrastructure & Capabilities
@@ -234,6 +236,7 @@ class TaskPlan(models.Model):
 
 
 class Task(models.Model):
+    TYPE_CHOICES = [(value, value.title()) for value in TASK_WEIGHTS]
     STATUS_CHOICES = [
         ('PENDING', 'Pending'),
         ('ASSIGNED', 'Assigned'),
@@ -246,6 +249,8 @@ class Task(models.Model):
     plan = models.ForeignKey(TaskPlan, on_delete=models.CASCADE, null=True, blank=True, related_name='tasks')
     plan_key = models.CharField(max_length=64, blank=True)
     required_capabilities = models.JSONField(default=list, blank=True)
+    capability_weights = models.JSONField(default=dict, blank=True, editable=False)
+    worker_context = models.TextField(blank=True, default='', help_text="Additional context selected specifically for this task")
     expected_output = models.TextField(blank=True)
     acceptance_criteria = models.JSONField(default=list, blank=True)
     assigned_agent = models.ForeignKey(
@@ -256,12 +261,12 @@ class Task(models.Model):
         related_name='assigned_tasks',
         db_column='assigned_agent_id'
     )
-    type = models.CharField(max_length=50, default='GENERAL', help_text="e.g. FRONTEND, BACKEND, DATABASE, TESTING, INTEGRATION")
+    type = models.CharField(max_length=50, choices=TYPE_CHOICES, default='GENERAL', help_text="e.g. FRONTEND, BACKEND, DATABASE, TESTING, INTEGRATION")
     title = models.CharField(max_length=200)
     instructions = models.TextField(blank=True)
     test_cases = models.JSONField(null=True, blank=True)
     test_result = models.JSONField(null=True, blank=True)
-    weights = models.FloatField(default=1.0)
+    weights = models.FloatField(default=1.0)  # Legacy complexity scalar, separate from capability weights.
     est_tokens = models.PositiveIntegerField(null=True, blank=True)
     max_tokens = models.PositiveIntegerField(null=True, blank=True)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='PENDING')
@@ -276,6 +281,18 @@ class Task(models.Model):
         super().clean()
         if self.plan_id and self.project_id != self.plan.project_id:
             raise ValidationError({'project': 'A task must belong to the same project as its plan.'})
+
+    def save(self, *args, **kwargs):
+        """Assign capability weights on creation/full saves and when the task type is saved."""
+        update_fields = kwargs.get('update_fields')
+        if update_fields is not None:
+            update_fields = set(update_fields)
+            kwargs['update_fields'] = update_fields
+        if update_fields is None or {'type', 'capability_weights'} & update_fields:
+            self.capability_weights = capability_weights_for(self.type)
+            if update_fields is not None:
+                kwargs['update_fields'] = update_fields | {'capability_weights'}
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         """Return a readable label for this database record."""
@@ -344,6 +361,41 @@ class CodeArtifact(models.Model):
         return f"Artifact for Task #{self.task_id} (Attempt {self.attempt})"
 
 
+class TaskOutputConflict(models.Model):
+    STATUS_CHOICES = [
+        ('OPEN', 'Open'),
+        ('RESOLVING', 'Resolving'),
+        ('RESOLVED', 'Resolved'),
+        ('FAILED', 'Resolver failed'),
+    ]
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='task_output_conflicts')
+    plan = models.ForeignKey(TaskPlan, on_delete=models.CASCADE, null=True, blank=True,
+                             related_name='output_conflicts')
+    scope_key = models.CharField(max_length=100)
+    path = models.TextField()
+    path_key = models.CharField(max_length=64)
+    artifacts = models.ManyToManyField(CodeArtifact, related_name='output_conflicts')
+    resolver_task = models.ForeignKey(Task, on_delete=models.SET_NULL, null=True, blank=True,
+                                      related_name='resolved_output_conflicts')
+    resolved_artifact = models.ForeignKey(CodeArtifact, on_delete=models.SET_NULL, null=True, blank=True,
+                                          related_name='conflicts_resolved')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='OPEN')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['scope_key', 'path_key'], condition=models.Q(status='OPEN'),
+                                    name='task_output_conflict_open_unique'),
+        ]
+        indexes = [models.Index(fields=['scope_key', 'path_key', 'created_at'],
+                                name='task_output_conflict_lookup')]
+
+    def __str__(self):
+        return f"{self.path} ({self.status})"
+
+
 class ArtifactReview(models.Model):
     artifact = models.ForeignKey(CodeArtifact, on_delete=models.CASCADE, related_name='reviews', db_column='artifact_id')
     reviewer_agent = models.ForeignKey(Agent, on_delete=models.PROTECT, related_name='artifact_reviews', db_column='reviewer_agent_id')
@@ -354,3 +406,108 @@ class ArtifactReview(models.Model):
     def __str__(self):
         """Return a readable label for this database record."""
         return f"Review for Artifact #{self.artifact_id}: {self.verdict}"
+
+
+class WorkerTaskResult(models.Model):
+    """FR-16: one leased execution and immutable final result per task attempt."""
+    lease = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='worker_results')
+    agent = models.ForeignKey(Agent, on_delete=models.PROTECT, related_name='worker_results')
+    attempt = models.PositiveIntegerField()
+    status = models.CharField(max_length=20, default='RUNNING')
+    model_name = models.CharField(max_length=100)
+    prompt = models.TextField()
+    options = models.JSONField(default=dict)
+    context_window = models.PositiveIntegerField()
+    result = models.JSONField(default=dict)
+    output = models.TextField(blank=True)
+    error = models.TextField(blank=True)
+    started_at = models.DateTimeField(default=timezone.now)
+    deadline = models.DateTimeField()
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['task', 'attempt'], name='fr16_unique_task_attempt')]
+
+
+class BenchmarkRun(models.Model):
+    """FR-9 benchmark run requested for one specialist; scores commit only on full success."""
+    STATUS_CHOICES = [('RUNNING', 'Running'), ('COMPLETED', 'Completed'), ('FAILED', 'Failed')]
+    agent = models.ForeignKey(Agent, on_delete=models.PROTECT, related_name='benchmark_runs')
+    model_name = models.CharField(max_length=100)
+    suite_version = models.CharField(max_length=40, default='fr9-v1')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='RUNNING')
+    scores = models.JSONField(default=dict, blank=True)
+    details = models.JSONField(default=dict, blank=True)
+    error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f'Benchmark #{self.pk} — {self.agent.name} ({self.status})'
+
+
+class BenchmarkCase(models.Model):
+    """One benchmark prompt mapped to an ordinary FR-16 task/result."""
+    run = models.ForeignKey(BenchmarkRun, on_delete=models.CASCADE, related_name='cases')
+    task = models.OneToOneField(Task, on_delete=models.CASCADE, related_name='benchmark_case')
+    metric = models.CharField(max_length=20)
+    case_id = models.CharField(max_length=40)
+    expected = models.JSONField(default=dict)
+    outcome = models.JSONField(default=dict, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['pk']
+
+    def __str__(self):
+        return f'{self.run} — {self.metric}/{self.case_id}'
+
+
+class ProjectIntegration(models.Model):
+    """FR-20: one merge of a plan's task outputs into a single runnable project tree."""
+    STATUS_CHOICES = [('RUNNING', 'Running'), ('COMPLETED', 'Completed'), ('FAILED', 'Failed')]
+    plan = models.ForeignKey(TaskPlan, on_delete=models.CASCADE, related_name='integrations')
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='integrations')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='RUNNING')
+    fingerprint = models.CharField(max_length=64, help_text='Hash of the task artifacts that were merged')
+    branch = models.CharField(max_length=100, blank=True)
+    commit = models.CharField(max_length=64, blank=True)
+    files = models.JSONField(default=list, blank=True, help_text='Merged files: path, task, bytes, sha256')
+    run = models.JSONField(default=dict, blank=True, help_text='Detected install, start and test commands')
+    conflicts = models.JSONField(default=list, blank=True)
+    problems = models.JSONField(default=list, blank=True)
+    warnings = models.JSONField(default=list, blank=True)
+    error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [models.Index(fields=['plan', '-created_at'], name='integration_plan_history')]
+
+    def __str__(self):
+        """Identify an integration run in the admin."""
+        return f'Integration #{self.pk} — {self.plan} ({self.status})'
+
+
+class AgentProfile(models.Model):
+    """FR-10: what an agent has actually achieved on real (non-benchmark) tasks.
+
+    Rebuilt from Metric rows after every task outcome by agent_profiles.refresh_profile().
+    Counts cover the agent's whole history; the rates and averages cover its most recent
+    outcomes only (agent_profiles.RECENT_WINDOW), so the profile follows the agent's current form.
+    """
+    agent = models.OneToOneField(Agent, on_delete=models.CASCADE, related_name='profile')
+    tasks_completed = models.PositiveIntegerField(default=0)
+    tasks_failed = models.PositiveIntegerField(default=0)
+    sample_size = models.PositiveIntegerField(default=0, help_text="Outcomes used for the rates and averages below")
+    success_rate = models.FloatField(null=True, blank=True, help_text="0 to 1, over the recent outcomes")
+    avg_duration_s = models.FloatField(null=True, blank=True, help_text="Average time spent per attempt, recent outcomes")
+    tokens_per_second = models.FloatField(null=True, blank=True, help_text="Median output speed of recent successful tasks")
+    total_time_s = models.FloatField(default=0.0, help_text="Time spent on all real tasks")
+    last_outcome_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Profile of {self.agent.name}: {self.tasks_completed} done, {self.tasks_failed} failed"
