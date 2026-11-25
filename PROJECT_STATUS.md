@@ -17,7 +17,7 @@ User request
   -> Router selects suitable specialists      PARTIAL (FR-14 task assignment)
   -> Scheduler releases runnable tasks        PARTIAL (workers claim runnable assigned tasks)
   -> Remote agents produce artifacts          PARTIAL (FR-16 task output returned)
-  -> Tests, review, and integration            FUTURE
+  -> Tests, review, and integration            PARTIAL (FR-20 merges task outputs into one project)
   -> Completed project and final report       FUTURE
 ```
 
@@ -42,6 +42,7 @@ User request
 | Administration and documentation | Django admin, API documentation, design specification, and brief explanations on Python functions and JavaScript functions/callbacks. Generated plan tasks and dependencies are protected from manual admin edits. |
 | Docker runtime | Application image with Gunicorn, WhiteNoise/static assets, non-root execution, startup migrations, and readiness checking. Compose runs Django/PostgreSQL with the existing data volume. Windows startup/configuration script and optional Ollama CPU/NVIDIA override files are provided; the default host-Ollama setup was executed and verified. See `DOCKER.md`. |
 | FR-16 worker execution | A token-authenticated worker sends heartbeats, claims its assigned task over HTTP, runs the agent's configured Ollama model locally, and returns a leased result with model digest, tokens, and timing. Results are stored with task attempts; offline delivery is retried from the worker outbox. |
+| FR-20 project integration | When a plan's tasks are all completed, their file outputs are merged in dependency order into one project, checked (Python syntax, JSON, HTML links, a start command), given a README/requirements/manifest, and committed once to the project's branch. Conflicting independent outputs fail the integration without a commit. See `WORKSPACE_API.md`. |
 | FR-9 benchmark and FR-8 scores | Django admin can queue a 14-case benchmark for an online, idle specialist. Coding, reasoning, context retrieval, and generation speed are measured through the FR-16 worker channel. Scores replace the profile together only after all cases return valid results; execution/measurement failures preserve existing scores. |
 
 ## Foundations that exist but need working services
@@ -54,7 +55,7 @@ A database table or status field is a starting point for these features, not a c
 | Capability metrics and agent scores | FR-8 profile storage and FR-9 benchmark updates are implemented. Routing policy can be refined with real usage. |
 | Task assignment, status, and attempt-count fields | FR-16 leases, attempts, result delivery, deadlines, and outbox recovery are implemented. Background scheduling and capacity reservations remain future work. |
 | Tasks and dependency records | Recording/validating dependencies and filtering runnable tasks are implemented. Transferring prerequisite artifacts to workers and automatically retrying failed prerequisites remain future work. |
-| Code artifacts and artifact reviews | Artifact upload/retrieval, repository changes, automated checks, reviewer execution, and integration. |
+| Code artifacts and artifact reviews | FR-18 stores and commits artifacts; FR-20 integrates them. Reviewer execution and repairing failed integrations remain future work. |
 | Execution metrics | Automatic recording of durations, token usage, failures, and retries during worker execution. |
 | Git branch metadata | Creating branches/worktrees, synchronizing repository versions, collecting patches, and merging accepted changes. |
 

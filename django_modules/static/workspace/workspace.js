@@ -307,6 +307,38 @@
     $("planError").hidden = false;
   }
 
+  /** Show the plan's FR-20 integration result and let the user merge completed task outputs. */
+  function renderIntegration(plan, completed) {
+    const section = node("div", "plan-integration"), result = plan.integration;
+    section.append(node("h4", "", "Integration"));
+    const ready = plan.taskCount > 0 && completed === plan.taskCount;
+    if (!result) section.append(node("p", "", ready ? "All tasks are completed. Merge their outputs into one runnable project." : `Available once every task is completed (${completed}/${plan.taskCount}).`));
+    else {
+      const where = result.commit ? ` · ${result.branch} @ ${result.commit.slice(0, 10)}` : "";
+      section.append(node("p", "", `${result.status === "COMPLETED" ? "Integrated" : result.status === "RUNNING" ? "Integrating" : "Integration failed"} · ${result.files.length} files${where}`));
+      const issues = [...result.conflicts.map(/* Describe a file two independent tasks wrote differently. */ (item) => `Conflict: ${item.path} (${item.tasks.join(" vs ")})`), ...result.problems, ...(result.error ? [result.error] : [])];
+      if (issues.length) { const list = node("ul", "plan-error"); for (const issue of issues) list.append(node("li", "", issue)); section.append(list); }
+      for (const [label, commands] of [["Install", result.run.install || []], ["Start", result.run.start || []], ["Test", result.run.test || []]]) {
+        if (commands.length) section.append(node("small", "", `${label}: ${commands.join(" && ")}`));
+      }
+      if (result.warnings.length) section.append(node("small", "", result.warnings.join(" ")));
+    }
+    if (ready) {
+      const button = node("button", "button button-secondary", result ? "Integrate again" : "Integrate project");
+      button.type = "button";
+      button.onclick = async /* Merge the plan's task outputs and show the recorded integration. */ () => {
+        const projectId = plans.projectId; button.disabled = true;
+        try {
+          plan.integration = await apiRequest(`/api/projects/${projectId}/plans/${plan.id}/integration/`, { method: "POST", body: {} });
+          if (plans.selectedId === plan.id && plans.projectId === projectId) renderPlan(plan);
+          toast(plan.integration.status === "COMPLETED" ? "Project integrated." : "Integration finished with problems.");
+        } catch (error) { showPlanError(error); button.disabled = false; }
+      };
+      section.append(button);
+    }
+    return section;
+  }
+
   /** Render saved task instructions and dependencies using safe text elements. */
   function renderPlan(plan) {
     plans.selected = plan; plans.selectedId = plan?.id || null;
@@ -317,9 +349,11 @@
     } else {
       const summary = node("div", "plan-summary");
       summary.append(node("h3", "", plan.title || "Plan request"), node("p", "", plan.summary || plan.request));
-      summary.append(node("small", "", `${plan.modelName} · ${plan.status === "READY" ? `${plan.taskCount} saved tasks · Execution not started` : plan.status === "GENERATING" ? "Generating" : "Generation failed"}`));
+      const completed = (plan.tasks || []).filter(/* Count tasks whose results were accepted. */ (task) => task.status === "COMPLETED").length;
+      summary.append(node("small", "", `${plan.modelName} · ${plan.status === "READY" ? `${plan.taskCount} saved tasks · ${completed ? `${completed} completed` : "Execution not started"}` : plan.status === "GENERATING" ? "Generating" : "Generation failed"}`));
       $("planResult").append(summary);
       if (plan.error) showPlanError(new Error(plan.error));
+      if (plan.status === "READY") $("planResult").append(renderIntegration(plan, completed));
       for (const task of plan.tasks || []) {
         const details = node("details", "plan-task"), heading = node("summary", "", `${task.key} — ${task.title}`);
         heading.append(node("small", "", `${task.type} · ${task.status}`)); details.append(heading);
