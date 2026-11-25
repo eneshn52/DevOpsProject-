@@ -250,6 +250,7 @@ class Task(models.Model):
     plan_key = models.CharField(max_length=64, blank=True)
     required_capabilities = models.JSONField(default=list, blank=True)
     capability_weights = models.JSONField(default=dict, blank=True, editable=False)
+    worker_context = models.TextField(blank=True, default='', help_text="Additional context selected specifically for this task")
     expected_output = models.TextField(blank=True)
     acceptance_criteria = models.JSONField(default=list, blank=True)
     assigned_agent = models.ForeignKey(
@@ -356,6 +357,41 @@ class CodeArtifact(models.Model):
     def __str__(self):
         """Return a readable label for this database record."""
         return f"Artifact for Task #{self.task_id} (Attempt {self.attempt})"
+
+
+class TaskOutputConflict(models.Model):
+    STATUS_CHOICES = [
+        ('OPEN', 'Open'),
+        ('RESOLVING', 'Resolving'),
+        ('RESOLVED', 'Resolved'),
+        ('FAILED', 'Resolver failed'),
+    ]
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='task_output_conflicts')
+    plan = models.ForeignKey(TaskPlan, on_delete=models.CASCADE, null=True, blank=True,
+                             related_name='output_conflicts')
+    scope_key = models.CharField(max_length=100)
+    path = models.TextField()
+    path_key = models.CharField(max_length=64)
+    artifacts = models.ManyToManyField(CodeArtifact, related_name='output_conflicts')
+    resolver_task = models.ForeignKey(Task, on_delete=models.SET_NULL, null=True, blank=True,
+                                      related_name='resolved_output_conflicts')
+    resolved_artifact = models.ForeignKey(CodeArtifact, on_delete=models.SET_NULL, null=True, blank=True,
+                                          related_name='conflicts_resolved')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='OPEN')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['scope_key', 'path_key'], condition=models.Q(status='OPEN'),
+                                    name='task_output_conflict_open_unique'),
+        ]
+        indexes = [models.Index(fields=['scope_key', 'path_key', 'created_at'],
+                                name='task_output_conflict_lookup')]
+
+    def __str__(self):
+        return f"{self.path} ({self.status})"
 
 
 class ArtifactReview(models.Model):
