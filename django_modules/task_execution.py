@@ -8,7 +8,9 @@ from django.db import transaction
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
-from .models import Agent, Metric, Task, WorkerTaskResult
+from .models import Agent, Metric, Project, Task, TaskOutputConflict, TaskPlan, WorkerTaskResult
+from .task_results import (check_answer, check_resolver_answer, fail_conflicts_for_task, job_format,
+                           needs_files, result_instructions, save_artifact)
 from django_modules.workspace_api import APIError, payload
 
 # FR-16-only access boundary. Existing view implementations remain unchanged.
@@ -100,16 +102,23 @@ def expire_executions(agent):
         Task.objects.filter(pk=execution.task_id, assigned_agent=agent, attempts=execution.attempt, status='IN_PROGRESS').update(status='FAILED')
         Metric.objects.create(task=execution.task, agent=agent, model=execution.model_name, success=False,
                               duration_s=(execution.completed_at - execution.started_at).total_seconds())
+        from .benchmarking import record_case_result
+        record_case_result(execution.task, execution)
+        fail_conflicts_for_task(execution.task)
         if agent.current_task_id == execution.task_id:
             agent.current_task, agent.status = None, 'IDLE'
             agent.save(update_fields=['current_task', 'status'])
 
 
 def job_json(execution):
-    return sign_job({'task_id': str(execution.task_id), 'attempt': execution.attempt, 'lease': str(execution.lease),
+    data = {'task_id': str(execution.task_id), 'attempt': execution.attempt, 'lease': str(execution.lease),
             'model': execution.model_name, 'prompt': execution.prompt, 'options': execution.options,
             'context_window': execution.context_window,
-            'timeout_s': max(1, int((execution.deadline - timezone.now()).total_seconds()))}, execution.agent_id)
+            'timeout_s': max(1, int((execution.deadline - timezone.now()).total_seconds()))}
+    answer_format = job_format(execution.task)
+    if answer_format:  # FR-18: project tasks answer in the agreed JSON shape
+        data['format'] = answer_format
+    return sign_job(data, execution.agent_id)
 
 
 @csrf_exempt
@@ -129,6 +138,17 @@ def start(request, agent_id, task_id):
         dependencies = list(task.dependencies.select_related('depends_on').order_by('depends_on_id'))
         if any(edge.depends_on.status != 'COMPLETED' for edge in dependencies):
             raise APIError('Task dependencies are not complete.', 409, 'DEPENDENCIES_PENDING')
+        conflicts = TaskOutputConflict.objects.filter(resolver_task=task)
+        is_resolver = conflicts.exists()
+        if is_resolver:
+            if task.plan_id:
+                TaskPlan.objects.select_for_update().get(pk=task.plan_id)
+            else:
+                Project.objects.select_for_update().get(pk=task.project_id)
+        source_task_ids = set()
+        if is_resolver:
+            for conflict in conflicts.prefetch_related('artifacts'):
+                source_task_ids.update(conflict.artifacts.values_list('task_id', flat=True))
         previous = WorkerTaskResult.objects.filter(task=task, attempt=task.attempts).first()
         if previous:
             if previous.agent_id != agent.pk or previous.status != 'RUNNING':
@@ -150,6 +170,8 @@ def start(request, agent_id, task_id):
             rows = (WorkerTaskResult.objects.filter(task_id__in=completed_dependency_ids, status='COMPLETED')
                     .order_by('task_id', '-attempt').values('task_id', 'output'))
             for row in rows:
+                if row['task_id'] in source_task_ids:
+                    continue
                 dependency_outputs.setdefault(row['task_id'], row['output'])
         if dependency_outputs:
             prompt += '\nDirect prerequisite outputs:\n'
@@ -157,6 +179,8 @@ def start(request, agent_id, task_id):
                 output = dependency_outputs.get(edge.depends_on_id)
                 if output:
                     prompt += f'\n[{edge.depends_on.title}]\n{output}'
+        if needs_files(task):
+            prompt += result_instructions(task)
         # Conservative byte upper bound rather than assuming one character = one token.
         if context < 512 or len(prompt.encode()) + 256 > int(context * .8):
             raise APIError('Task exceeds the configured context budget.', 409, 'CONTEXT_LIMIT')
@@ -169,6 +193,8 @@ def start(request, agent_id, task_id):
             deadline=timezone.now() + timedelta(seconds=settings.FR16_TASK_TIMEOUT))
         task.status = 'IN_PROGRESS'
         task.save(update_fields=['status', 'attempts'])
+        if is_resolver:
+            conflicts.filter(status='OPEN').update(status='RESOLVING', updated_at=timezone.now())
         agent.status, agent.current_task = 'BUSY', task
         agent.save(update_fields=['status', 'current_task'])
         return job_json(execution)
@@ -195,6 +221,9 @@ def validate(data):
         value = data.get(name)
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 86400:
             raise APIError(f'Invalid {name}.')
+    generation_duration = data.get('generation_duration_s', 0)
+    if type(generation_duration) not in (int, float) or not math.isfinite(generation_duration) or not 0 <= generation_duration <= 86400:
+        raise APIError('Invalid generation_duration_s.')
     for name in ('prompt_tokens', 'output_tokens'):
         if type(data.get(name)) is not int or not 0 <= data[name] <= 10000000:
             raise APIError(f'Invalid {name}.')
@@ -206,7 +235,8 @@ def validate(data):
 @for_worker(strict=True)
 @endpoint('POST')
 def result(request, agent_id, task_id):
-    fields = {'attempt', 'lease', 'status', 'output', 'error', 'duration_s', 'prompt_tokens', 'output_tokens', 'model_metadata'}
+    fields = {'attempt', 'lease', 'status', 'output', 'error', 'duration_s', 'generation_duration_s',
+              'prompt_tokens', 'output_tokens', 'model_metadata'}
     data = payload(request, fields, max_bytes=700000)
     validate(data)
     with transaction.atomic():
@@ -229,15 +259,29 @@ def result(request, agent_id, task_id):
             return {'status': 'FAILED', 'error': execution.error, 'id': execution.pk}
         execution.result, execution.output, execution.error = data, data['output'], data['error']
         execution.status, execution.completed_at = data['status'], timezone.now()
+        parsed = None
+        if execution.status == 'COMPLETED' and needs_files(task):
+            parsed, problem = check_answer(task, data['output'])
+            if parsed and TaskOutputConflict.objects.filter(resolver_task=task).exists():
+                problem = check_resolver_answer(task, parsed)
+            if problem:  # FR-18: an unusable answer is a failed attempt, with the reason kept
+                execution.status, execution.error = 'FAILED', problem
+                parsed = None
         execution.save(update_fields=['result', 'output', 'error', 'status', 'completed_at'])
         task.status = execution.status
         task.save(update_fields=['status'])
+        if parsed:
+            save_artifact(task, agent, execution.attempt, parsed)
+        elif execution.status == 'FAILED':
+            fail_conflicts_for_task(task)
         Metric.objects.create(task=task, agent=agent, model=execution.model_name,
-            success=data['status'] == 'COMPLETED', duration_s=data['duration_s'],
+            success=execution.status == 'COMPLETED', duration_s=data['duration_s'],
             prompt_tokens=data['prompt_tokens'], output_tokens=data['output_tokens'], retries=max(0, task.attempts - 1))
+        from .benchmarking import record_case_result
+        record_case_result(task, execution)
         agent.status, agent.current_task, agent.last_heartbeat = 'IDLE', None, timezone.now()
         agent.save(update_fields=['status', 'current_task', 'last_heartbeat'])
-        return {'status': execution.status, 'id': execution.pk}
+        return {'status': execution.status, 'id': execution.pk, **({'error': execution.error} if execution.error else {})}
 
 
 @for_worker(strict=True)

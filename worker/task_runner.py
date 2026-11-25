@@ -27,7 +27,8 @@ logger = logging.getLogger('worker.execute')
 def generate(job, config):
     started = time.monotonic()
     result = {'attempt': job['attempt'], 'lease': job['lease'], 'status': 'FAILED',
-              'output': '', 'error': '', 'duration_s': 0, 'prompt_tokens': 0, 'output_tokens': 0}
+              'output': '', 'error': '', 'duration_s': 0, 'generation_duration_s': 0,
+              'prompt_tokens': 0, 'output_tokens': 0}
     try:
         unsigned = {key: value for key, value in job.items() if key != 'signature'}
         signature = hmac.new(config['shared_token'].encode(), json.dumps(unsigned, sort_keys=True, separators=(',', ':')).encode(), hashlib.sha256).hexdigest()
@@ -46,6 +47,8 @@ def generate(job, config):
             raise ValueError('Cannot record the installed model version digest.')
         result['model_metadata'] = {'name': name, 'digest': info['digest'], 'details': info.get('details', {}), 'modified_at': info.get('modified_at', '')}
         body = dict(model=job['model'], prompt=job['prompt'], options=job['options'], stream=False)
+        if job.get('format'):  # FR-18: master asks for the JSON result shape
+            body['format'] = job['format']
         remaining = job['timeout_s'] - (time.monotonic() - started)
         if remaining <= 0:
             raise TimeoutError('Task timeout during model metadata lookup.')
@@ -61,11 +64,14 @@ def generate(job, config):
         output = answer.get('response')
         if not isinstance(output, str) or not output.strip() or len(output) > 100000:
             raise ValueError('Model returned no final answer or output was too large.')
+        eval_duration = answer.get('eval_duration', 0)
+        generation_duration_s = (eval_duration / 1_000_000_000
+                                 if type(eval_duration) is int and eval_duration > 0 else 0)
         for name in ('prompt_eval_count', 'eval_count'):
             if type(answer.get(name, 0)) is not int or not 0 <= answer.get(name, 0) <= 10000000:
                 raise ValueError('Invalid model token metadata.')
         result.update(status='COMPLETED', output=output, prompt_tokens=answer.get('prompt_eval_count', 0),
-                      output_tokens=answer.get('eval_count', 0))
+                      output_tokens=answer.get('eval_count', 0), generation_duration_s=generation_duration_s)
     except (OSError, ValueError, KeyError, TypeError) as error:
         result['error'] = f'{type(error).__name__}: {error}'[:1000]
     result['duration_s'] = time.monotonic() - started
