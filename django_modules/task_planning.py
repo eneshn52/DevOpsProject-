@@ -9,6 +9,7 @@ from django.db.models import Count
 from django.utils import timezone
 
 from .chat_service import call_model
+from .integration import integrate_plan, integration_json, latest_integration
 from .models import Project, Task, TaskDependency, TaskPlan
 from .workspace_api import APIError, endpoint, master_record, payload, project_record, text, uuid_value
 
@@ -125,6 +126,7 @@ def plan_json(plan, include_tasks=False):
             for task in tasks
         ]
         result['taskCount'] = len(tasks)
+        result['integration'] = integration_json(latest_integration(plan))
     else:
         result['taskCount'] = plan.task_count
     return result
@@ -253,3 +255,15 @@ def plan_detail(request, project_id, plan_id):
     project = project_record(project_id)
     expire_plans(project.pk)
     return plan_json(TaskPlan.objects.get(pk=plan_id, project=project), include_tasks=True)
+
+
+@endpoint('GET', 'POST')
+def plan_integration(request, project_id, plan_id):
+    """FR-20: read the plan's latest integration, or merge its completed task outputs into one project."""
+    project = project_record(project_id)
+    plan = TaskPlan.objects.get(pk=plan_id, project=project)
+    if request.method == 'GET':
+        return integration_json(latest_integration(plan))
+    payload(request, set(), max_bytes=1024)
+    integration, created = integrate_plan(plan.pk)
+    return integration_json(integration), 201 if created else 200

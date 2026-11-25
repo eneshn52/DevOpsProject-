@@ -39,6 +39,7 @@ urlpatterns = [
     path('api/projects/<int:project_id>/', workspace_api.project_detail, name='project_detail'),
     path('api/projects/<int:project_id>/plans/', task_planning.project_plans, name='project_plans'),
     path('api/projects/<int:project_id>/plans/<uuid:plan_id>/', task_planning.plan_detail, name='plan_detail'),
+    path('api/projects/<int:project_id>/plans/<uuid:plan_id>/integration/', task_planning.plan_integration, name='plan_integration'),
     path('api/conversations/', workspace_api.conversations, name='conversations'),
     path('api/conversations/<uuid:conversation_id>/', workspace_api.conversation_detail, name='conversation_detail'),
     path('api/connections/', workspace_api.connections, name='connections'),

@@ -271,3 +271,23 @@ class BenchmarkRunAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+from .models import ProjectIntegration
+
+
+@admin.register(ProjectIntegration)
+class ProjectIntegrationAdmin(admin.ModelAdmin):
+    """FR-20 runs are records of what was merged; they are created only by the integration step."""
+    list_display = ('id', 'project', 'plan', 'status', 'branch', 'commit', 'created_at', 'completed_at')
+    list_filter = ('status',)
+    search_fields = ('project__name', 'plan__title', 'commit')
+    readonly_fields = tuple(field.name for field in ProjectIntegration._meta.fields)
+
+    def has_add_permission(self, request):
+        """Integrations are produced by the integration step, not typed in."""
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        """Keep the integration history for inspection."""
+        return False
