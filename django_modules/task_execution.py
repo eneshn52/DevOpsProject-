@@ -8,6 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
+from .agent_profiles import refresh_profile
 from .models import Agent, Metric, Task, WorkerTaskResult
 from .task_results import check_answer, job_format, needs_files, result_instructions, save_artifact
 from django_modules.workspace_api import APIError, payload
@@ -103,6 +104,7 @@ def expire_executions(agent):
                               duration_s=(execution.completed_at - execution.started_at).total_seconds())
         from .benchmarking import record_case_result
         record_case_result(execution.task, execution)
+        refresh_profile(agent)  # FR-10: a timed-out attempt counts as a failure
         if agent.current_task_id == execution.task_id:
             agent.current_task, agent.status = None, 'IDLE'
             agent.save(update_fields=['current_task', 'status'])
@@ -241,6 +243,7 @@ def result(request, agent_id, task_id):
             prompt_tokens=data['prompt_tokens'], output_tokens=data['output_tokens'], retries=max(0, task.attempts - 1))
         from .benchmarking import record_case_result
         record_case_result(task, execution)
+        refresh_profile(agent)  # FR-10: update success rate and time spent
         agent.status, agent.current_task, agent.last_heartbeat = 'IDLE', None, timezone.now()
         agent.save(update_fields=['status', 'current_task', 'last_heartbeat'])
         return {'status': execution.status, 'id': execution.pk, **({'error': execution.error} if execution.error else {})}

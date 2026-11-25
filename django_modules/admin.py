@@ -5,6 +5,7 @@ from .models import (
     AIModel,
     Agent,
     AgentCapabilityScore,
+    AgentProfile,
     Project,
     ChatMessage,
     Task,
@@ -219,6 +220,17 @@ class MetricAdmin(admin.ModelAdmin):
     list_display = ('id', 'task', 'agent', 'model', 'duration_s', 'prompt_tokens', 'output_tokens', 'success', 'retries')
     list_filter = ('success', 'model')
     search_fields = ('model', 'task__title')
+
+
+@admin.register(AgentProfile)
+class AgentProfileAdmin(admin.ModelAdmin):
+    """FR-10: read-only view; profiles are rebuilt from Metric rows after each task."""
+    list_display = ('agent', 'tasks_completed', 'tasks_failed', 'success_rate', 'avg_duration_s',
+                    'tokens_per_second', 'total_time_s', 'last_outcome_at')
+    readonly_fields = [field.name for field in AgentProfile._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
 
 
 @admin.register(CodeArtifact)

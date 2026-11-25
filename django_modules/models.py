@@ -451,3 +451,25 @@ class ProjectIntegration(models.Model):
     def __str__(self):
         """Identify an integration run in the admin."""
         return f'Integration #{self.pk} — {self.plan} ({self.status})'
+
+
+class AgentProfile(models.Model):
+    """FR-10: what an agent has actually achieved on real (non-benchmark) tasks.
+
+    Rebuilt from Metric rows after every task outcome by agent_profiles.refresh_profile().
+    Counts cover the agent's whole history; the rates and averages cover its most recent
+    outcomes only (agent_profiles.RECENT_WINDOW), so the profile follows the agent's current form.
+    """
+    agent = models.OneToOneField(Agent, on_delete=models.CASCADE, related_name='profile')
+    tasks_completed = models.PositiveIntegerField(default=0)
+    tasks_failed = models.PositiveIntegerField(default=0)
+    sample_size = models.PositiveIntegerField(default=0, help_text="Outcomes used for the rates and averages below")
+    success_rate = models.FloatField(null=True, blank=True, help_text="0 to 1, over the recent outcomes")
+    avg_duration_s = models.FloatField(null=True, blank=True, help_text="Average time spent per attempt, recent outcomes")
+    tokens_per_second = models.FloatField(null=True, blank=True, help_text="Median output speed of recent successful tasks")
+    total_time_s = models.FloatField(default=0.0, help_text="Time spent on all real tasks")
+    last_outcome_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Profile of {self.agent.name}: {self.tasks_completed} done, {self.tasks_failed} failed"

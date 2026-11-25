@@ -660,6 +660,7 @@
     nameRow.append(node("span", "agent-name", model.name || "Unnamed specialist"));
     if (!isMaster) nameRow.append(agentStatus(model));
     details.append(nameRow, node("span", "agent-model", model.modelName || "Choose a model"));
+    if (!isMaster && configured) { const track = node("span", "agent-track", trackRecordText(model.profile)); track.dataset.agentTrack = model.id || ""; details.append(track); }
     identity.append(avatar, details);
     const meta = node("div", "agent-meta"), api = state.apis.find(/* Find the record matching this identifier. */ (item) => item.id === model.apiId);
     meta.append(node("span", "role-label", isMaster ? "Master" : roleNames[model.role] || "General"), node("span", "", !configured ? "Setup required" : api?.name || (isMaster ? "Local endpoint" : "No connection")));
@@ -671,10 +672,19 @@
     const [value, unit] = seconds < 60 ? [seconds, "second"] : seconds < 3600 ? [Math.floor(seconds / 60), "minute"] : seconds < 86400 ? [Math.floor(seconds / 3600), "hour"] : [Math.floor(seconds / 86400), "day"];
     return `Last seen: ${value} ${unit}${value === 1 ? "" : "s"} ago`;
   }
+  /** FR-10: summarize a specialist's results on real tasks, as profiled by the server. */
+  function trackRecordText(profile) {
+    const total = profile ? profile.tasksCompleted + profile.tasksFailed : 0;
+    if (!total) return "No tasks yet";
+    const parts = [`${profile.tasksCompleted}/${total} tasks succeeded`];
+    if (profile.successRate !== null) parts.push(`${Math.round(profile.successRate * 100)}% recent`);
+    if (profile.avgDurationS !== null) parts.push(`avg ${profile.avgDurationS < 60 ? `${profile.avgDurationS.toFixed(1)} s` : `${(profile.avgDurationS / 60).toFixed(1)} min`}`);
+    return parts.join(" · ");
+  }
   /** Show the server's heartbeat verdict on a status indicator; the label never relies on color alone. */
   function applyAgentStatus(element, model) {
     element.classList.toggle("online", Boolean(model.online));
-    element.title = lastSeenText(model.lastSeenSeconds);
+    element.title = `${lastSeenText(model.lastSeenSeconds)}\n${trackRecordText(model.profile)}`;
     element.querySelector(".agent-status-label").textContent = model.online ? "Online" : "Offline";
   }
   /** Build a specialist's heartbeat indicator with a decorative dot and a text label. */
@@ -712,8 +722,12 @@
       const latest = new Map(agents.map(/* Index each specialist by its identifier. */ (agent) => [agent.id, agent]));
       for (const model of state.models) {
         const fresh = latest.get(model.id);
-        if (fresh) Object.assign(model, { status: fresh.status, online: fresh.online, lastSeenSeconds: fresh.lastSeenSeconds, lastHeartbeat: fresh.lastHeartbeat });
+        if (fresh) Object.assign(model, { status: fresh.status, online: fresh.online, lastSeenSeconds: fresh.lastSeenSeconds, lastHeartbeat: fresh.lastHeartbeat, profile: fresh.profile });
       }
+      $("specialistList").querySelectorAll("[data-agent-track]").forEach(/* FR-10: refresh each track record line. */ (element) => {
+        const model = state.models.find(/* Find the record matching this identifier. */ (item) => item.id === element.dataset.agentTrack);
+        if (model) element.textContent = trackRecordText(model.profile);
+      });
       $("specialistList").querySelectorAll("[data-agent-status]").forEach(/* Update this indicator from the latest status. */ (element) => {
         const model = state.models.find(/* Find the record matching this identifier. */ (item) => item.id === element.dataset.agentStatus);
         if (model) applyAgentStatus(element, model);
