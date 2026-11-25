@@ -1,4 +1,6 @@
 """FR-16 additions: leases, result storage and a real HTTP worker/model round trip."""
+import os
+from unittest import skipUnless
 import io
 import json
 import os
@@ -13,7 +15,7 @@ from django.test import Client, LiveServerTestCase, SimpleTestCase, TestCase, ov
 from django.utils import timezone
 
 from .task_execution import sign_job
-from django_modules.models import AIModel, Agent, Metric, Task, TaskDependency
+from django_modules.models import AIModel, Agent, Metric, Project, Task, TaskDependency, TaskPlan
 from .models import WorkerTaskResult
 from worker import task_runner as execute
 from worker import worker as original_worker
@@ -138,6 +140,43 @@ class ExecutionApiTests(TestCase):
         self.assertEqual(self.post('start', {}).status_code, 409)
         self.assertFalse(WorkerTaskResult.objects.exists())
 
+    def test_worker_prompt_contains_only_task_context_and_direct_prerequisite_outputs(self):
+        project = Project.objects.create(name='Scoped project', requirements_text='Project-wide private requirements')
+        plan = TaskPlan.objects.create(project=project, request_text='Unrelated project request',
+                                       project_context={'requirements': 'Project-wide private context'},
+                                       model_name='planner', agent_name='master')
+        self.task.project = project
+        self.task.plan = plan
+        self.task.worker_context = 'Use the shared API contract for this task.'
+        self.task.save()
+        prerequisite = Task.objects.create(project=project, plan=plan, plan_key='contract',
+                                           title='API contract', status='COMPLETED')
+        unrelated = Task.objects.create(project=project, plan=plan, plan_key='unrelated',
+                                        title='Unrelated secret task', status='COMPLETED')
+        TaskDependency.objects.create(task=self.task, depends_on=prerequisite)
+        WorkerTaskResult.objects.create(task=prerequisite, agent=self.agent, attempt=1, status='COMPLETED',
+                                        model_name='test', prompt='prior prompt', context_window=8192,
+                                        output='GET /items returns a JSON list.', deadline=timezone.now())
+        WorkerTaskResult.objects.create(task=unrelated, agent=self.agent, attempt=1, status='COMPLETED',
+                                        model_name='test', prompt='unrelated prompt', context_window=8192,
+                                        output='Unrelated confidential output.', deadline=timezone.now())
+
+        prompt = self.start()['prompt']
+
+        self.assertIn('Use the shared API contract for this task.', prompt)
+        self.assertIn('[API contract]\nGET /items returns a JSON list.', prompt)
+        self.assertNotIn('Project-wide private requirements', prompt)
+        self.assertNotIn('Project-wide private context', prompt)
+        self.assertNotIn('Unrelated project request', prompt)
+        self.assertNotIn('Unrelated secret task', prompt)
+        self.assertNotIn('Unrelated confidential output.', prompt)
+
+    def test_oversized_task_specific_context_does_not_reserve_execution(self):
+        self.task.worker_context = 'x' * 10000
+        self.task.save()
+        self.assertEqual(self.post('start', {}).status_code, 409)
+        self.assertFalse(WorkerTaskResult.objects.exists())
+
 
 @override_settings(FR16_WORKER_TOKENS={'1': 'test-fr16'})
 class ExecutionClientTests(SimpleTestCase):
@@ -203,6 +242,7 @@ class WorkerExecutionLiveTests(LiveServerTestCase):
         task.refresh_from_db()
         self.assertEqual(code, 0, task.test_result or WorkerTaskResult.objects.get(task=task).error)
         self.assertEqual(task.test_result['review']['status'], 'approved')
+        self.assertEqual(task.test_result['status'], 'passed')
         self.assertEqual(CodeArtifact.objects.get(task=task).files['files'][0]['content'], task.test_result['source'])
 
     def test_worker_fetches_runs_reports_and_keeps_heartbeat_alive(self):
@@ -275,6 +315,7 @@ class WorkerExecutionLiveTests(LiveServerTestCase):
                         self.assertEqual(original_worker.main([*args, '--run-tests']), 0 if success else 1)
                     tested.refresh_from_db()
                     self.assertEqual(tested.test_result['review']['status'], 'approved' if success else 'rejected')
+                    self.assertEqual(tested.test_result['status'], 'passed' if success else 'failed')
                     self.assertEqual(tested.status, 'COMPLETED' if success else 'FAILED')
                     execution = WorkerTaskResult.objects.get(task=tested)
                     self.assertEqual(execution.result['testReport'], tested.test_result)

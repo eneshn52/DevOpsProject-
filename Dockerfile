@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements-docker.txt \
 COPY --chown=workspace:workspace manage.py gunicorn.conf.py ./
 COPY --chown=workspace:workspace django_settings ./django_settings
 COPY --chown=workspace:workspace django_modules ./django_modules
-COPY --chown=workspace:workspace worker/code_review.py ./worker/code_review.py
+COPY --chown=workspace:workspace worker ./worker
 COPY --chown=workspace:workspace templates ./templates
 COPY --chown=workspace:workspace docker/start.py ./docker/start.py
 

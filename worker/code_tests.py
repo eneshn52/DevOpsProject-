@@ -65,7 +65,7 @@ def test_code(source, cases):
 def generate(config, model, task):
     prompt = ('Write a pure Python function solve(value) for the following task. Return a JSON object '
               'with a single "source" string. Use builtins only.\n' +
-              json.dumps({k: task[k] for k in ('title', 'instructions', 'expectedOutput', 'acceptanceCriteria')}))
+              json.dumps({k: task.get(k) for k in ('title', 'instructions', 'expectedOutput', 'acceptanceCriteria', 'workerContext', 'prerequisiteOutputs')}))
     body = {'model': model, 'prompt': prompt, 'stream': False, 'format': 'json',
             'options': {'num_predict': task['maxTokens']}}
     headers = {'Content-Type': 'application/json'}
