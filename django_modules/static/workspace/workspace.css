@@ -187,6 +187,7 @@ kbd { font: 10px/1.4 var(--mono); color: var(--muted); white-space: nowrap; }
 .agent-status.online { color: var(--secondary); }
 .agent-status.online .agent-status-dot { background: var(--online); box-shadow: 0 0 0 2px color-mix(in srgb,var(--online) 22%,transparent); }
 .agent-model { display: block; font: 10px var(--mono); color: var(--muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-track { display: block; font-size: 9px; color: var(--muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-meta { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 13px; font-size: 9px; color: var(--muted); }
 .agent-meta > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .role-label { padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; }
