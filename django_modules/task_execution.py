@@ -8,10 +8,11 @@ from django.db import transaction
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
+from .task_distribution import prerequisite_context, task_json
 from .agent_profiles import refresh_profile
-from .models import Agent, Metric, Task, WorkerTaskResult
-from .task_results import check_answer, job_format, needs_files, result_instructions, save_artifact
-from .task_distribution import task_json
+from .models import Agent, Metric, Project, Task, TaskOutputConflict, TaskPlan, WorkerTaskResult
+from .task_results import (check_answer, check_resolver_answer, fail_conflicts_for_task, job_format,
+                           needs_files, result_instructions, save_artifact)
 from worker.code_review import valid as valid_review
 from django_modules.workspace_api import APIError, payload
 
@@ -106,6 +107,7 @@ def expire_executions(agent):
                               duration_s=(execution.completed_at - execution.started_at).total_seconds())
         from .benchmarking import record_case_result
         record_case_result(execution.task, execution)
+        fail_conflicts_for_task(execution.task)
         refresh_profile(agent)  # FR-10: a timed-out attempt counts as a failure
         if agent.current_task_id == execution.task_id:
             agent.current_task, agent.status = None, 'IDLE'
@@ -119,7 +121,7 @@ def job_json(execution):
             'timeout_s': max(1, int((execution.deadline - timezone.now()).total_seconds()))}
     answer_format = job_format(execution.task)
     if execution.task.test_cases is not None:
-        data['testTask'] = task_json(execution.task)
+        data['testTask'] = dict(task_json(execution.task), executionPrompt=execution.prompt)
     if answer_format:  # FR-18: project tasks answer in the agreed JSON shape
         data['format'] = answer_format
     return sign_job(data, execution.agent_id)
@@ -139,8 +141,20 @@ def start(request, agent_id, task_id):
             raise APIError('This task belongs to another worker.', 403, 'WRONG_WORKER')
         if task.status not in {'ASSIGNED', 'IN_PROGRESS'}:
             raise APIError('Task must be assigned before execution.', 409, 'TASK_NOT_ASSIGNED')
-        if task.dependencies.exclude(depends_on__status='COMPLETED').exists():
+        dependencies = list(task.dependencies.select_related('depends_on').order_by('depends_on_id'))
+        if any(edge.depends_on.status != 'COMPLETED' for edge in dependencies):
             raise APIError('Task dependencies are not complete.', 409, 'DEPENDENCIES_PENDING')
+        conflicts = TaskOutputConflict.objects.filter(resolver_task=task)
+        is_resolver = conflicts.exists()
+        if is_resolver:
+            if task.plan_id:
+                TaskPlan.objects.select_for_update().get(pk=task.plan_id)
+            else:
+                Project.objects.select_for_update().get(pk=task.project_id)
+        source_task_ids = set()
+        if is_resolver:
+            for conflict in conflicts.prefetch_related('artifacts'):
+                source_task_ids.update(conflict.artifacts.values_list('task_id', flat=True))
         previous = WorkerTaskResult.objects.filter(task=task, attempt=task.attempts).first()
         if previous:
             if previous.agent_id != agent.pk or previous.status != 'RUNNING':
@@ -152,8 +166,13 @@ def start(request, agent_id, task_id):
             raise APIError('Configure the worker model first.', 409, 'MODEL_REQUIRED')
         context = agent.context_window or agent.ai_model.max_context or 4096
         prompt = f'Task: {task.title}\nInstructions:\n{task.instructions}\nExpected output:\n{task.expected_output}'
+        if task.worker_context:
+            prompt += '\nTask-specific context:\n' + task.worker_context
         if task.acceptance_criteria:
             prompt += '\nAcceptance criteria:\n' + '\n'.join(map(str, task.acceptance_criteria))
+        prerequisite_outputs = prerequisite_context(task, exclude=source_task_ids)
+        if prerequisite_outputs:
+            prompt += '\nDirect prerequisite outputs:\n' + prerequisite_outputs
         if needs_files(task):
             prompt += result_instructions(task)
         if task.test_cases is not None:
@@ -172,6 +191,8 @@ def start(request, agent_id, task_id):
             deadline=timezone.now() + timedelta(seconds=settings.FR16_TASK_TIMEOUT))
         task.status = 'IN_PROGRESS'
         task.save(update_fields=['status', 'attempts'])
+        if is_resolver:
+            conflicts.filter(status='OPEN').update(status='RESOLVING', updated_at=timezone.now())
         agent.status, agent.current_task = 'BUSY', task
         agent.save(update_fields=['status', 'current_task'])
         return job_json(execution)
@@ -251,8 +272,11 @@ def result(request, agent_id, task_id):
         parsed = None
         if execution.status == 'COMPLETED' and needs_files(task):
             parsed, problem = check_answer(task, data['output'])
+            if parsed and TaskOutputConflict.objects.filter(resolver_task=task).exists():
+                problem = check_resolver_answer(task, parsed)
             if problem:  # FR-18: an unusable answer is a failed attempt, with the reason kept
                 execution.status, execution.error = 'FAILED', problem
+                parsed = None
         if task.test_cases is not None:
             report = data.get('testReport')
             files = parsed['files'] if parsed else []
@@ -268,6 +292,8 @@ def result(request, agent_id, task_id):
         task.save(update_fields=['status', 'test_result'] if task.test_cases is not None else ['status'])
         if parsed:
             save_artifact(task, agent, execution.attempt, parsed)
+        elif execution.status == 'FAILED':
+            fail_conflicts_for_task(task)
         Metric.objects.create(task=task, agent=agent, model=execution.model_name,
             success=execution.status == 'COMPLETED', duration_s=data['duration_s'],
             prompt_tokens=data['prompt_tokens'], output_tokens=data['output_tokens'], retries=max(0, task.attempts - 1))

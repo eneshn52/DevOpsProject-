@@ -358,6 +358,7 @@
         const details = node("details", "plan-task"), heading = node("summary", "", `${task.key} — ${task.title}`);
         heading.append(node("small", "", `${task.type} · ${task.status}`)); details.append(heading);
         details.append(node("p", "", task.instructions));
+        if (task.workerContext) details.append(node("h4", "", "Task-specific worker context"), node("p", "", task.workerContext));
         details.append(node("h4", "", "Dependencies"), node("p", "", task.dependsOn.length ? task.dependsOn.join(", ") : "None — can start when execution is available."));
         details.append(node("h4", "", "Required capabilities"), node("p", "", task.requiredCapabilities.join(", ")));
         if (task.capabilityWeights) details.append(node("h4", "", "Capability weights"), node("p", "", Object.entries(task.capabilityWeights).map(/* Format each stored capability weight as a percentage. */ ([name, weight]) => `${name}: ${Math.round(weight * 100)}%`).join(", ")));

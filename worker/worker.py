@@ -215,7 +215,7 @@ def run_next(workspace, config, agent_id, model):
     try:
         workspace.request('POST', f"/api/agents/{agent_id}/tasks/{task['id']}/test-result/", report)
     except OSError as error:
-        raise WorkerError(f"Could not confirm delivery of task {task['id']} review: {error}") from error
+        raise WorkerError(f"Could not confirm delivery of task {task['id']} result: {error}") from error
     workspace.heartbeat(agent_id)
     logger.info('Task %s test result: %s; review: %s', task['id'], report['status'], report['review']['status'])
 

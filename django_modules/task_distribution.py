@@ -16,7 +16,7 @@ from django.utils import timezone
 
 from .agent_profiles import adjusted_scores
 from .capabilities import get_scores
-from .models import Agent, Metric, Task, TaskDependency
+from .models import Agent, Metric, Task, TaskDependency, WorkerTaskResult
 from .scheduler import DEFAULT_MAX_TOKENS, pick_task_for
 from .task_weights import TASK_WEIGHTS
 from .workspace_api import APIError, endpoint
@@ -34,8 +34,35 @@ def task_json(task):
             'type': task.type, 'title': task.title, 'instructions': task.instructions,
             'expectedOutput': task.expected_output, 'acceptanceCriteria': task.acceptance_criteria,
             'requiredCapabilities': task.required_capabilities,
+            'workerContext': task.worker_context,
             'capabilityWeights': task.capability_weights,
             'maxTokens': task.max_tokens or DEFAULT_MAX_TOKENS, 'attempt': task.attempts}
+
+
+def prerequisite_context(task, exclude=()):
+    """Only direct, completed prerequisites; a standalone task has no leased result row."""
+    dependencies = list(task.dependencies.select_related('depends_on')
+                        .filter(depends_on__status='COMPLETED').exclude(depends_on_id__in=exclude)
+                        .order_by('depends_on_id'))
+    outputs = {}
+    for pk, output in (WorkerTaskResult.objects.filter(task_id__in=[d.depends_on_id for d in dependencies],
+                                                       status='COMPLETED').order_by('task_id', '-attempt')
+                       .values_list('task_id', 'output')):
+        outputs.setdefault(pk, output)
+    sections = []
+    for edge in dependencies:
+        parent = edge.depends_on
+        output = outputs.get(parent.pk) or (parent.test_result or {}).get('source')
+        if output:
+            sections.append(f'[{parent.title}]\n{output}')
+    return '\n'.join(sections)
+
+
+def assignment(task, runner):
+    data = task_json(task)
+    if runner == 'python':
+        data['prerequisiteOutputs'] = prerequisite_context(task)
+    return data
 
 
 def ready_tasks():
@@ -122,7 +149,7 @@ def next_task(request, agent_id):
         if held:
             if not supports_task(held, runner) or (runner == 'python' and held.status != 'ASSIGNED'):
                 return None, 204
-            return task_json(held)
+            return assignment(held, runner)
 
         for _ in range(CLAIM_ATTEMPTS):
             if runner in ('python', 'combined'):
@@ -137,7 +164,7 @@ def next_task(request, agent_id):
                        .update(status='ASSIGNED', assigned_agent=agent, attempts=F('attempts') + 1))
             if claimed:
                 task.refresh_from_db()
-                return task_json(task)
+                return assignment(task, runner)
         return None, 204
 
 

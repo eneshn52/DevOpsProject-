@@ -13,7 +13,8 @@ from django.utils import timezone
 
 from worker import task_runner as execute
 from worker.worker import DEFAULTS
-from .models import AIModel, Agent, BenchmarkCase, BenchmarkRun, CodeArtifact, Metric, Project, Task, WorkerTaskResult
+from .models import (AIModel, Agent, BenchmarkCase, BenchmarkRun, CodeArtifact, Metric, Project, Task,
+                     TaskDependency, TaskOutputConflict, TaskPlan, WorkerTaskResult)
 from .result_format import RESULT_SCHEMA
 from .task_execution import sign_job
 from .task_results import commit_artifact, needs_files
@@ -146,6 +147,124 @@ class ProjectTaskResultTests(TestCase):
         self.assertEqual(self.git('log', '--format=%s', f'main..{branch}').count('[task '), 2)
         self.assertEqual(sorted(self.git('ls-tree', '-r', '--name-only', branch).splitlines()),
                          ['backend/app.py', 'tests/test_app.py'])
+
+    @skipIf(shutil.which('git') is None, 'git is not installed')
+    def test_tested_artifacts_use_scoped_context_and_enter_conflict_resolution_once(self):
+        for task, expression in [(self.task, 'x*2'), (self.make_task('Alternative'), 'x+x')]:
+            task.test_cases = [{'input': 2, 'expected': 4}]
+            task.worker_context = 'Use integer arithmetic.'
+            task.save()
+            job = self.start(task)
+            self.assertIn(task.worker_context, job['testTask']['executionPrompt'])
+            source = f'def solve(x): return {expression}'
+            report = dict(status='passed', source=source, attempt=job['attempt'], exitCode=0,
+                          cases=[{'status': 'passed'}])
+            report['review'] = dict(status='approved', comments=[f'{expression} doubles the integer input.'],
+                                    issues=[], improvements=[], rejectionReasons=[])
+            body = dict(attempt=job['attempt'], lease=job['lease'], status='COMPLETED', error='',
+                        output=json.dumps({'files': [{'path': 'backend/double.py', 'content': source}]}),
+                        duration_s=1, prompt_tokens=10, output_tokens=10, model_metadata={'digest': 'fixture'},
+                        testReport=report)
+            with self.captureOnCommitCallbacks(execute=True):
+                for _ in range(2):
+                    self.assertEqual(self.post(task, 'result', body).json()['data']['status'], 'COMPLETED')
+        conflict = TaskOutputConflict.objects.get()
+        self.assertEqual(conflict.status, 'OPEN')
+        self.assertIsNotNone(conflict.resolver_task_id)
+        self.assertEqual(conflict.artifacts.count(), 2)
+        self.assertEqual(Metric.objects.count(), 2)
+
+    def test_conflicting_parallel_outputs_queue_resolver_and_hold_the_file(self):
+        first = json.dumps({'files': [{'path': 'backend/shared.py', 'content': 'version one'}],
+                            'summary': 'First implementation'})
+        second = json.dumps({'files': [{'path': 'backend/shared.py', 'content': 'version two'}],
+                             'summary': 'Second implementation'})
+        self.finish(first)
+        downstream = Task.objects.create(project=self.project, title='Join both branches', status='PENDING')
+        TaskDependency.objects.create(task=downstream, depends_on=self.task)
+        other = self.make_task('Build another feature')
+
+        self.finish(second, task=other)
+
+        conflict = TaskOutputConflict.objects.get()
+        resolver = conflict.resolver_task
+        self.assertEqual(conflict.status, 'OPEN')
+        self.assertEqual((resolver.type, resolver.status), ('INTEGRATION', 'PENDING'))
+        self.assertSetEqual(set(conflict.artifacts.values_list('task_id', flat=True)), {self.task.pk, other.pk})
+        self.assertSetEqual(set(resolver.dependencies.values_list('depends_on_id', flat=True)),
+                            {self.task.pk, other.pk})
+        self.assertTrue(downstream.dependencies.filter(depends_on=resolver).exists())
+        branch = f'project/{self.project.pk}-book-shop'
+        self.assertEqual(self.git('show', f'{branch}:backend/shared.py'), 'version one')
+
+        resolver.assigned_agent = self.agent
+        resolver.status = 'ASSIGNED'
+        resolver.save(update_fields=['assigned_agent', 'status'])
+        merged = json.dumps({'files': [{'path': 'backend/shared.py', 'content': 'merged version'}],
+                             'summary': 'Resolved both changes'})
+        self.finish(merged, task=resolver)
+        conflict.refresh_from_db()
+        self.assertEqual(conflict.status, 'RESOLVED')
+        self.assertIn('version one', WorkerTaskResult.objects.get(task=resolver).prompt)
+        self.assertIn('version two', WorkerTaskResult.objects.get(task=resolver).prompt)
+        self.assertNotIn('Direct prerequisite outputs:', WorkerTaskResult.objects.get(task=resolver).prompt)
+        self.assertEqual(self.git('show', f'{branch}:backend/shared.py'), 'merged version')
+
+    def test_sequential_changes_to_the_same_file_are_not_conflicts(self):
+        first = json.dumps({'files': [{'path': 'backend/shared.py', 'content': 'initial'}], 'summary': 'First'})
+        second = json.dumps({'files': [{'path': 'backend/shared.py', 'content': 'updated'}], 'summary': 'Next'})
+        self.finish(first)
+        other = self.make_task('Continue the implementation')
+        TaskDependency.objects.create(task=other, depends_on=self.task)
+
+        self.finish(second, task=other)
+
+        self.assertFalse(TaskOutputConflict.objects.exists())
+
+    def test_resolver_must_return_only_the_conflicted_file(self):
+        self.finish(json.dumps({'files': [{'path': 'backend/shared.py', 'content': 'one'}], 'summary': 'First'}))
+        other = self.make_task('Build another feature')
+        self.finish(json.dumps({'files': [{'path': 'backend/shared.py', 'content': 'two'}], 'summary': 'Second'}),
+                    task=other)
+        conflict = TaskOutputConflict.objects.get()
+        resolver = conflict.resolver_task
+        resolver.assigned_agent = self.agent
+        resolver.status = 'ASSIGNED'
+        resolver.save(update_fields=['assigned_agent', 'status'])
+
+        data, _ = self.finish(answer('backend/other.py'), task=resolver)
+
+        self.assertEqual(data['status'], 'FAILED')
+        self.assertIn('exactly the complete file', data['error'])
+        conflict.refresh_from_db()
+        self.assertEqual(conflict.status, 'FAILED')
+
+    def test_identical_parallel_outputs_do_not_create_a_conflict(self):
+        output = json.dumps({'files': [{'path': 'backend/shared.py', 'content': 'same'}], 'summary': 'Same'})
+        self.finish(output)
+        other = self.make_task('Repeat the same implementation')
+
+        self.finish(output, task=other)
+
+        self.assertFalse(TaskOutputConflict.objects.exists())
+
+    def test_planned_conflict_creates_resolver_in_the_same_plan(self):
+        plan = TaskPlan.objects.create(project=self.project, request_text='Build features',
+                                       model_name='planner', agent_name='master')
+        first = Task.objects.create(project=self.project, plan=plan, plan_key='first', title='First',
+                                    assigned_agent=self.agent, status='ASSIGNED')
+        second = Task.objects.create(project=self.project, plan=plan, plan_key='second', title='Second',
+                                     assigned_agent=self.agent, status='ASSIGNED')
+        self.finish(json.dumps({'files': [{'path': 'backend/shared.py', 'content': 'one'}], 'summary': 'First'}),
+                    task=first)
+        self.finish(json.dumps({'files': [{'path': 'backend/shared.py', 'content': 'two'}], 'summary': 'Second'}),
+                    task=second)
+
+        conflict = TaskOutputConflict.objects.get()
+        self.assertEqual(conflict.plan, plan)
+        self.assertEqual(conflict.resolver_task.plan, plan)
+        self.assertTrue(conflict.resolver_task.plan_key.startswith('fr24-'))
+        self.assertEqual(conflict.resolver_task.dependencies.count(), 2)
 
     def test_answer_that_is_not_json_fails_the_attempt_with_the_reason(self):
         data, _ = self.finish('Sure! Here is the code: def login(): ...')
